@@ -6,6 +6,8 @@ from providers.litellm import LiteLLM, LiteLLMModel
 
 load_dotenv()
 
+LIMIT_IMPORT_CHECK = 3
+
 
 def _get_llm() -> LiteLLM:
     return LiteLLM(model=LiteLLMModel.CLAUDE_SONNET_4_6, temperature=0.8)
@@ -39,10 +41,8 @@ def run_dependency(diff: str) -> str:
         return "No external dependencies detected in this diff."
 
     fetched_parts: list[str] = []
-    for imp in imported[:3]:  # limit to 3 files to control token usage
-        path = (
-            imp.replace(".", "/") + ".py" if "." in imp and "/" not in imp else imp
-        )
+    for imp in imported[:LIMIT_IMPORT_CHECK]:  # limit files to control token usage
+        path = imp.replace(".", "/") + ".py" if "." in imp and "/" not in imp else imp
         # content = fetch_file_content(repo_name, path)
         content = ""
         fetched_parts.append(f"### {path}\n```\n{content[:500]}\n```")

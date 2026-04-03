@@ -2,6 +2,7 @@ import os
 
 import requests
 from dotenv import load_dotenv
+from github import Github
 
 load_dotenv()
 
@@ -17,6 +18,22 @@ def _headers() -> dict:
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+
+
+def fetch_diff(repo_name: str, owner: str, pr_id: int):
+    token = os.environ.get("GITHUB_TOKEN")
+    g = Github(token)
+    repo = g.get_repo(f"{owner}/{repo_name}")
+    pull = repo.get_pull(pr_id)
+
+    diffs = []
+
+    for file in pull.get_files():
+        diffs.append(
+            {"filename": file.filename, "diff": file.patch, "raw": file.raw_data}
+        )
+
+    return diffs
 
 
 def fetch_file_content(repo_name: str, file_path: str, ref: str = "main") -> str:

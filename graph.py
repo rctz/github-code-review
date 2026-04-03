@@ -27,21 +27,28 @@ def _build_file_review_subgraph() -> CompiledStateGraph:
 
 
 def _map_files_to_review(state: PRReviewState) -> list[Send]:
-    return [
-        Send(
-            "review_single_file",
-            {
-                "pr_id": state["pr_id"],
-                "repo_name": state["repo_name"],
-                "filename": file["filename"],
-                "diff": file["diff"],
-                "system_prompt": state["system_prompt"],
-                "dependency_context": "",
-                "file_reviews": [],
-            },
+    seen: set[str] = set()
+    sends: list[Send] = []
+    for file in state["pr_files"]:
+        filename = file["filename"]
+        if filename in seen:
+            continue
+        seen.add(filename)
+        sends.append(
+            Send(
+                "review_single_file",
+                {
+                    "pr_id": state["pr_id"],
+                    "repo_name": state["repo_name"],
+                    "filename": filename,
+                    "diff": file["diff"],
+                    "system_prompt": state["system_prompt"],
+                    "dependency_context": "",
+                    "file_reviews": [],
+                },
+            )
         )
-        for file in state["pr_files"]
-    ]
+    return sends
 
 
 # ── Build the graph ──────────────────────────────────────────────────────────

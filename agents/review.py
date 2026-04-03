@@ -33,7 +33,7 @@ class FileReviewOutput(BaseModel):
 
 
 def _get_llm() -> LiteLLM:
-    return LiteLLM(model=LiteLLMModel.GPT_5_4, temperature=1.0)
+    return LiteLLM(model=LiteLLMModel.GLM_5_1, temperature=1.0)
 
 
 def _parse_response(content: str, filename: str) -> FileReviewOutput:
@@ -92,7 +92,9 @@ Analyze the diff and return a JSON object with this exact structure:
 }}
 
 Rules:
-- Each review item must cover one specific issue (bugs, security, performance, or style).
+- Each review item must cover a DISTINCT issue — no two items should address the same root cause.
+- If multiple observations relate to the same problem, merge them into a single, comprehensive item.
+- Before adding an item, ensure its topic does not overlap with any other item already listed.
 - Write everything in English.
 - Output only the JSON object — no markdown fences, no extra text."""
 
