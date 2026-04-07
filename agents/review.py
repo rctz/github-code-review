@@ -27,13 +27,31 @@ class ReviewItem(BaseModel):
         return v
 
 
+_SEVERITY_EMOJI = {"High": "🔴", "Mid": "🟡", "Low": "🟢"}
+
+
 class FileReviewOutput(BaseModel):
     filename: str
     reviews: list[ReviewItem]
 
+    def to_markdown(self) -> str:
+        """Render as GitHub-ready markdown for a PR comment section."""
+        lines: list[str] = [f"### 📄 `{self.filename}`", ""]
+        for item in self.reviews:
+            emoji = _SEVERITY_EMOJI.get(item.critical_rate, "⚪")
+            lines.append(f"#### {emoji} {item.critical_rate} — {item.title}")
+            lines.append("")
+            lines.append(item.detail)
+            lines.append("")
+            lines.append(f"**Suggestion:** {item.suggestion_for_change}")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+        return "\n".join(lines)
+
 
 def _get_llm() -> LiteLLM:
-    return LiteLLM(model=LiteLLMModel.GLM_5_1, temperature=1.0)
+    return LiteLLM(model=LiteLLMModel.GPT_5_4, temperature=1.0)
 
 
 def _parse_response(content: str, filename: str) -> FileReviewOutput:

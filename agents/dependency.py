@@ -6,7 +6,7 @@ from providers.litellm import LiteLLM, LiteLLMModel
 
 load_dotenv()
 
-LIMIT_IMPORT_CHECK = 3
+LIMIT_IMPORT_CHECK = 7
 
 
 def _get_llm() -> LiteLLM:

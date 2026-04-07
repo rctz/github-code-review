@@ -10,4 +10,4 @@ def review_node(state: SingleFileState) -> dict:
         system_prompt=state["system_prompt"],
         dependency_context=state.get("dependency_context", ""),
     )
-    return {"file_reviews": [result.model_dump_json(indent=2)]}
+    return {"file_reviews": [result.to_markdown()]}
