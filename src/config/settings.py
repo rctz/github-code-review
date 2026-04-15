@@ -19,6 +19,9 @@ class Settings(BaseSettings):
 
     # Application
     log_level: str = "INFO"
+    max_concurrent_llm_calls: int = 5
+    llm_rate_limit: int = 20
+    llm_rate_period_seconds: int = 60
 
 
 settings = Settings()

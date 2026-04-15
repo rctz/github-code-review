@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_litellm import ChatLiteLLM
@@ -9,6 +11,34 @@ from providers.base import LLMProvider
 from providers.models import LiteLLMModel
 
 logger = logging.getLogger(__name__)
+
+
+class _RateLimiter:
+    """Sliding-window rate limiter — allows N requests per period."""
+
+    def __init__(self, max_requests: int, period_seconds: int) -> None:
+        self._max = max_requests
+        self._period = period_seconds
+        self._timestamps: list[float] = []
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                self._timestamps = [t for t in self._timestamps if now - t < self._period]
+                if len(self._timestamps) < self._max:
+                    self._timestamps.append(now)
+                    return
+                sleep_time = self._period - (now - self._timestamps[0]) + 0.1
+            # Sleep *outside* the lock so other threads aren't blocked
+            logger.debug("Rate limit reached — sleeping %.1fs", sleep_time)
+            time.sleep(sleep_time)
+
+
+# Shared limiter across all provider instances
+_rate_limiter = _RateLimiter(settings.llm_rate_limit, settings.llm_rate_period_seconds)
+_semaphore = threading.Semaphore(settings.max_concurrent_llm_calls)
 
 
 class LiteLLMProvider(LLMProvider):
@@ -31,11 +61,14 @@ class LiteLLMProvider(LLMProvider):
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     def chat(self, message: str, system_message: str | None = None) -> str:
-        msgs = self._build_messages(message, system_message)
-        response = self._llm.invoke(msgs)
-        return str(response.content)
+        _rate_limiter.acquire()
+        with _semaphore:
+            msgs = self._build_messages(message, system_message)
+            response = self._llm.invoke(msgs)
+            return str(response.content)
 
     def chat_stream(self, message: str, system_message: str | None = None) -> None:
+        _rate_limiter.acquire()
         msgs = self._build_messages(message, system_message)
         for chunk in self._llm.stream(msgs):
             print(chunk.text, end="", flush=True)

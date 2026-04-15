@@ -32,6 +32,10 @@ def _map_files_to_review(state: PRReviewState) -> list[Send]:
         filename = file["filename"]
         if filename in seen:
             continue
+        diff = file.get("diff") or ""
+        if not diff:
+            logger.info("Skipping file with no diff: %s", filename)
+            continue
         seen.add(filename)
         sends.append(
             Send(
@@ -40,7 +44,7 @@ def _map_files_to_review(state: PRReviewState) -> list[Send]:
                     "pr_id": state.pr_id,
                     "repo_name": state.repo_name,
                     "filename": filename,
-                    "diff": file["diff"],
+                    "diff": diff,
                     "system_prompt": state.system_prompt,
                     "dependency_context": "",
                     "file_reviews": [],

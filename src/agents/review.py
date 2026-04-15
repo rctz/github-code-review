@@ -14,8 +14,10 @@ logger = logging.getLogger(__name__)
 class ReviewItem(BaseModel):
     title: str
     detail: str
+    existing_code_to_replace: str
     suggestion_for_change: str
-    critical_rate: Literal["High", "Mid", "Low"]
+    exact_code_replacement: str
+    critical_rate: Literal["Critical", "High", "Mid"]
 
     @field_validator("title")
     @classmethod
@@ -25,7 +27,7 @@ class ReviewItem(BaseModel):
         return v
 
 
-_SEVERITY_EMOJI = {"High": "🔴", "Mid": "🟡", "Low": "🟢"}
+_SEVERITY_EMOJI = {"Critical": "🔴", "High": "🟠", "Mid": "🟡"}
 
 
 class FileReviewOutput(BaseModel):
@@ -33,7 +35,7 @@ class FileReviewOutput(BaseModel):
     reviews: list[ReviewItem]
 
     def to_markdown(self) -> str:
-        """Render as GitHub-ready markdown for a PR comment section."""
+        """Render as GitHub-ready markdown with suggestion blocks."""
         lines: list[str] = [f"### 📄 `{self.filename}`", ""]
         for item in self.reviews:
             emoji = _SEVERITY_EMOJI.get(item.critical_rate, "⚪")
@@ -42,6 +44,10 @@ class FileReviewOutput(BaseModel):
             lines.append(item.detail)
             lines.append("")
             lines.append(f"**Suggestion:** {item.suggestion_for_change}")
+            lines.append("")
+            lines.append("```suggestion")
+            lines.append(item.exact_code_replacement)
+            lines.append("```")
             lines.append("")
             lines.append("---")
             lines.append("")
@@ -88,8 +94,10 @@ def run_review(
                 ReviewItem(
                     title="Review output parse error",
                     detail=f"The model returned an unexpected format. Raw: {response[:500]}",
+                    existing_code_to_replace="",
                     suggestion_for_change="Re-run the review or inspect the model output manually.",
-                    critical_rate="Low",
+                    exact_code_replacement="",
+                    critical_rate="Mid",
                 )
             ],
         )

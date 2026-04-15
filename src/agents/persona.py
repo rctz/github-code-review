@@ -16,7 +16,7 @@ def run_persona(repo_name: str) -> str:
     Returns:
         A concise system prompt string for the code reviewer.
     """
-    llm = LLMFactory.create(model=LiteLLMModel.GPT_5_4, temperature=1.0)
+    llm = LLMFactory.create(model=LiteLLMModel.GLM_5_1, temperature=1.0)
     prompt = PERSONA_SYSTEM_PROMPT.format(repo_name=repo_name)
     logger.info("Generating persona for repo: %s", repo_name)
     return llm.chat(prompt)

@@ -12,7 +12,7 @@ class LLMFactory:
 
     @staticmethod
     def create(
-        model: str | LiteLLMModel = LiteLLMModel.CLAUDE_SONNET_4_6,
+        model: LiteLLMModel = LiteLLMModel.CLAUDE_SONNET_4_6,
         temperature: float = 0.6,
     ) -> LLMProvider:
         """Create an LLM provider based on the model identifier.

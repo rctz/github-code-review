@@ -26,7 +26,7 @@ class SingleFileState(BaseModel):
     pr_id: str
     repo_name: str
     filename: str
-    diff: str
+    diff: str = ""
     system_prompt: str = ""
     dependency_context: str = ""
     file_reviews: Annotated[list[str], operator.add] = []
