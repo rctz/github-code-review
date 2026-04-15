@@ -1,5 +1,7 @@
+import json
 from unittest.mock import MagicMock, patch
 
+from agents.review import FileReviewOutput, ReviewItem
 from nodes.aggregate_node import aggregate_node
 from nodes.dependency_node import dependency_node
 from nodes.error_node import error_node
@@ -8,12 +10,30 @@ from nodes.review_node import review_node
 from state.models import PRReviewState, SingleFileState
 
 
+def _make_review_json(filename: str = "test.py", title: str = "Issue") -> str:
+    """Helper to build a FileReviewOutput JSON string."""
+    output = FileReviewOutput(
+        filename=filename,
+        reviews=[
+            ReviewItem(
+                title=title,
+                detail="Some detail",
+                existing_code_to_replace="old",
+                suggestion_for_change="fix",
+                exact_code_replacement="new",
+                critical_rate="Mid",
+            )
+        ],
+    )
+    return output.model_dump_json()
+
+
 class TestPersonaNode:
     @patch("nodes.persona_node.run_persona")
     def test_persona_node_success(self, mock_run_persona: MagicMock) -> None:
         mock_run_persona.return_value = "You are a Python reviewer."
         state = PRReviewState(
-            pr_id="1", repo_name="owner/repo", pr_files=[{"filename": "a.py", "diff": "+x", "raw": {}}]
+            pr_id="1", owner="owner", repo_name="repo", pr_files=[{"filename": "a.py", "diff": "+x", "raw": {}}]
         )
         result = persona_node(state)
         assert result["system_prompt"] == "You are a Python reviewer."
@@ -22,7 +42,7 @@ class TestPersonaNode:
     @patch("nodes.persona_node.run_persona")
     def test_persona_node_handles_error(self, mock_run_persona: MagicMock) -> None:
         mock_run_persona.side_effect = RuntimeError("LLM unavailable")
-        state = PRReviewState(pr_id="1", repo_name="owner/repo", pr_files=[])
+        state = PRReviewState(pr_id="1", owner="owner", repo_name="repo", pr_files=[])
         result = persona_node(state)
         assert "error" in result
         assert "Persona generation failed" in result["error"]
@@ -34,7 +54,7 @@ class TestDependencyNode:
         mock_run_dep.return_value = "### utils.py\n```\n```"
         state = SingleFileState(
             pr_id="1",
-            repo_name="owner/repo",
+            repo_name="repo",
             filename="test.py",
             diff="+import utils",
         )
@@ -42,21 +62,32 @@ class TestDependencyNode:
         assert result["dependency_context"] == "### utils.py\n```\n```"
 
     def test_dependency_node_empty_diff(self) -> None:
-        state = SingleFileState(pr_id="1", repo_name="owner/repo", filename="test.py", diff="")
+        state = SingleFileState(pr_id="1", repo_name="repo", filename="test.py", diff="")
         result = dependency_node(state)
         assert result["dependency_context"] == ""
 
 
 class TestReviewNode:
     @patch("nodes.review_node.run_review")
-    def test_review_node_success(self, mock_run_review: MagicMock) -> None:
-        mock_output = MagicMock()
-        mock_output.to_markdown.return_value = "### 📄 `test.py`\nReview content"
+    def test_review_node_stores_json(self, mock_run_review: MagicMock) -> None:
+        mock_output = FileReviewOutput(
+            filename="test.py",
+            reviews=[
+                ReviewItem(
+                    title="Bug",
+                    detail="desc",
+                    existing_code_to_replace="old",
+                    suggestion_for_change="fix",
+                    exact_code_replacement="new",
+                    critical_rate="High",
+                )
+            ],
+        )
         mock_run_review.return_value = mock_output
 
         state = SingleFileState(
             pr_id="1",
-            repo_name="owner/repo",
+            repo_name="repo",
             filename="test.py",
             diff="+x = 1",
             system_prompt="You are a reviewer.",
@@ -64,14 +95,16 @@ class TestReviewNode:
         )
         result = review_node(state)
         assert len(result["file_reviews"]) == 1
-        assert "test.py" in result["file_reviews"][0]
+        parsed = json.loads(result["file_reviews"][0])
+        assert parsed["filename"] == "test.py"
+        assert len(parsed["reviews"]) == 1
 
     @patch("nodes.review_node.run_review")
     def test_review_node_handles_error(self, mock_run_review: MagicMock) -> None:
         mock_run_review.side_effect = RuntimeError("LLM error")
         state = SingleFileState(
             pr_id="1",
-            repo_name="owner/repo",
+            repo_name="repo",
             filename="broken.py",
             diff="+x = 1",
             system_prompt="reviewer",
@@ -79,25 +112,39 @@ class TestReviewNode:
         )
         result = review_node(state)
         assert len(result["file_reviews"]) == 1
-        assert "Error" in result["file_reviews"][0]
+        parsed = json.loads(result["file_reviews"][0])
+        assert "error" in parsed["reviews"][0]["title"].lower()
 
 
 class TestAggregateNode:
-    def test_aggregate_node_combines_reviews(self) -> None:
+    def test_aggregate_node_parses_json_reviews(self) -> None:
+        review_json = _make_review_json("src/auth.py", "SQL injection")
         state = PRReviewState(
             pr_id="42",
-            repo_name="owner/repo",
+            owner="owner",
+            repo_name="repo",
             pr_files=[],
-            file_reviews=["### File 1 review", "### File 2 review"],
+            file_reviews=[review_json],
         )
         result = aggregate_node(state)
-        assert "File 1 review" in result["final_comment"]
-        assert "File 2 review" in result["final_comment"]
-        assert "owner/repo" in result["final_comment"]
+        assert "src/auth.py" in result["final_comment"]
+        assert "SQL injection" in result["final_comment"]
+        assert "repo" in result["final_comment"]
         assert "#42" in result["final_comment"]
 
+    def test_aggregate_node_handles_raw_markdown_fallback(self) -> None:
+        state = PRReviewState(
+            pr_id="1",
+            owner="owner",
+            repo_name="repo",
+            pr_files=[],
+            file_reviews=["### Plain markdown fallback"],
+        )
+        result = aggregate_node(state)
+        assert "Plain markdown fallback" in result["final_comment"]
+
     def test_aggregate_node_empty_reviews(self) -> None:
-        state = PRReviewState(pr_id="1", repo_name="owner/repo", pr_files=[])
+        state = PRReviewState(pr_id="1", owner="owner", repo_name="repo", pr_files=[])
         result = aggregate_node(state)
         assert "PR Review" in result["final_comment"]
 
@@ -106,7 +153,8 @@ class TestErrorNode:
     def test_error_node_with_message(self) -> None:
         state = PRReviewState(
             pr_id="1",
-            repo_name="owner/repo",
+            owner="owner",
+            repo_name="repo",
             pr_files=[],
             error="Something went wrong",
         )
@@ -116,6 +164,6 @@ class TestErrorNode:
         assert result["file_reviews"] == []
 
     def test_error_node_without_message(self) -> None:
-        state = PRReviewState(pr_id="1", repo_name="owner/repo", pr_files=[])
+        state = PRReviewState(pr_id="1", owner="owner", repo_name="repo", pr_files=[])
         result = error_node(state)
         assert "Unknown error" in result["final_comment"]

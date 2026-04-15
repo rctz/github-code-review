@@ -10,8 +10,10 @@ class PRReviewState(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     pr_id: str
+    owner: str
     repo_name: str
     pr_files: list[dict]
+    github_token: str = ""
     system_prompt: str = ""
     file_reviews: Annotated[list[str], operator.add] = []
     final_comment: str = ""

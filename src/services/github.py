@@ -89,6 +89,33 @@ class GitHubService:
         wait=wait_exponential(min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
+    def create_pr_review(self, repo_name: str, pr_number: int, body: str, event: str = "COMMENT") -> bool:
+        """Create a PR review comment using the GitHub Reviews API.
+
+        Args:
+            repo_name: Full repo name (e.g., "owner/repo").
+            pr_number: Pull request number.
+            body: The review body (markdown).
+            event: Review event type — "COMMENT", "APPROVE", or "REQUEST_CHANGES".
+
+        Returns:
+            True if successful.
+        """
+        url = f"{_GITHUB_API}/repos/{repo_name}/pulls/{pr_number}/reviews"
+        payload = {"body": body, "event": event}
+        resp = requests.post(url, headers=self._headers(), json=payload, timeout=10)
+        success = resp.status_code == 201
+        if success:
+            logger.info("Created PR review on %s#%d", repo_name, pr_number)
+        else:
+            logger.error("Failed to create PR review on %s#%d: HTTP %d", repo_name, pr_number, resp.status_code)
+        return success
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
     def post_pr_comment(self, repo_name: str, pr_number: int, body: str) -> bool:
         """Post a review comment on a GitHub PR.
 

@@ -7,6 +7,7 @@ from langgraph.types import Send
 from nodes.aggregate_node import aggregate_node
 from nodes.dependency_node import dependency_node
 from nodes.persona_node import persona_node
+from nodes.post_review_node import post_review_node
 from nodes.review_node import review_node
 from state.models import PRReviewState, SingleFileOutput, SingleFileState
 
@@ -62,11 +63,13 @@ def build_graph() -> StateGraph:
     graph.add_node("persona_node", persona_node)
     graph.add_node("review_single_file", _build_file_review_subgraph())
     graph.add_node("aggregate_node", aggregate_node)
+    graph.add_node("post_review_node", post_review_node)
 
     graph.add_edge(START, "persona_node")
     graph.add_conditional_edges("persona_node", _map_files_to_review, ["review_single_file"])
     graph.add_edge("review_single_file", "aggregate_node")
-    graph.add_edge("aggregate_node", END)
+    graph.add_edge("aggregate_node", "post_review_node")
+    graph.add_edge("post_review_node", END)
 
     return graph
 

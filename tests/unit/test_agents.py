@@ -1,6 +1,8 @@
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from agents.dependency import _extract_imported_files, run_dependency
 from agents.persona import run_persona
@@ -71,13 +73,25 @@ class TestReviewAgent:
         assert result.filename == "src/test.py"
 
     def test_parse_json_missing_filename(self) -> None:
-        json_str = '{"reviews": [{"title": "t", "detail": "d", "suggestion_for_change": "s", "critical_rate": "Low"}]}'
+
+        json_str = json.dumps(
+            {
+                "reviews": [
+                    {
+                        "title": "t",
+                        "detail": "d",
+                        "existing_code_to_replace": "old",
+                        "suggestion_for_change": "s",
+                        "exact_code_replacement": "new",
+                        "critical_rate": "Mid",
+                    }
+                ]
+            }
+        )
         result = _parse_response(json_str, "fallback.py")
         assert result.filename == "fallback.py"
 
     def test_review_item_title_validation_rejects_long(self) -> None:
-        from pydantic import ValidationError
-
         long_title = (
             "This is an intentionally very long title that will clearly exceed the fifteen word validation limit"
         )
@@ -87,7 +101,9 @@ class TestReviewAgent:
             ReviewItem(
                 title=long_title,
                 detail="detail",
+                existing_code_to_replace="old",
                 suggestion_for_change="suggestion",
+                exact_code_replacement="new",
                 critical_rate="High",
             )
 
@@ -95,7 +111,9 @@ class TestReviewAgent:
         item = ReviewItem(
             title="Short title",
             detail="detail",
+            existing_code_to_replace="old code",
             suggestion_for_change="suggestion",
+            exact_code_replacement="new code",
             critical_rate="Mid",
         )
         assert item.title == "Short title"
@@ -106,7 +124,10 @@ class TestReviewAgent:
         mock_llm.chat.return_value = (
             '{"filename": "src/test.py", "reviews": '
             '[{"title": "Issue", "detail": "desc", '
-            '"suggestion_for_change": "fix", "critical_rate": "Low"}]}'
+            '"existing_code_to_replace": "old", '
+            '"suggestion_for_change": "fix", '
+            '"exact_code_replacement": "new", '
+            '"critical_rate": "Mid"}]}'
         )
         mock_factory.create.return_value = mock_llm
 
@@ -140,7 +161,7 @@ class TestFileReviewOutput:
         md = sample_file_review_output.to_markdown()
         assert "src/test.py" in md
         assert "Missing type hints" in md
-        assert "🟢" in md  # Low severity emoji
+        assert "🟡" in md  # Mid severity emoji
 
     def test_to_markdown_high_severity(self) -> None:
         output = FileReviewOutput(
@@ -149,11 +170,13 @@ class TestFileReviewOutput:
                 ReviewItem(
                     title="SQL injection",
                     detail="Unsafe query",
+                    existing_code_to_replace="f'SELECT * FROM users WHERE name={name}'",
                     suggestion_for_change="Use parameterized queries",
+                    exact_code_replacement="'SELECT * FROM users WHERE name=?', [name]",
                     critical_rate="High",
                 )
             ],
         )
         md = output.to_markdown()
-        assert "🔴" in md
+        assert "🟠" in md  # High severity emoji
         assert "auth.py" in md

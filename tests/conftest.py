@@ -35,8 +35,10 @@ def sample_file_review_output() -> FileReviewOutput:
             ReviewItem(
                 title="Missing type hints",
                 detail="Function foo lacks type annotations.",
+                existing_code_to_replace="def foo():",
                 suggestion_for_change="Add type hints: def foo() -> None:",
-                critical_rate="Low",
+                exact_code_replacement="def foo() -> None:",
+                critical_rate="Mid",
             )
         ],
     )
@@ -51,7 +53,9 @@ def sample_review_json() -> str:
         {
             "title": "SQL injection risk",
             "detail": "Query uses string formatting with user input.",
+            "existing_code_to_replace": "db.execute(f'SELECT * FROM users WHERE name={name}')",
             "suggestion_for_change": "Use parameterized queries.",
+            "exact_code_replacement": "db.execute('SELECT * FROM users WHERE name=?', [name])",
             "critical_rate": "High"
         }
     ]

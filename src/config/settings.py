@@ -17,6 +17,15 @@ class Settings(BaseSettings):
     # GitHub
     github_token: str = ""
 
+    # GitHub App
+    github_app_id: str = ""
+    github_app_private_key: str = ""  # PEM content or path to .pem file
+
+    # Webhook
+    github_webhook_secret: str = ""
+    webhook_host: str = "0.0.0.0"
+    webhook_port: int = 8000
+
     # Application
     log_level: str = "INFO"
     max_concurrent_llm_calls: int = 5

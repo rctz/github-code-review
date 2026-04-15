@@ -20,6 +20,39 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_MOCK_PATH = str(_PROJECT_ROOT / "tests" / "mock_input.json")
 
 
+def run_review_from_payload(
+    repo_name: str,
+    owner: str,
+    pr_number: int,
+    github_token: str | None = None,
+) -> PRReviewState:
+    """Run PR review for a given repo and PR number.
+
+    Args:
+        repo_name: Repository name (without owner).
+        owner: Repository owner.
+        pr_number: Pull request number.
+        github_token: Optional token override (e.g. GitHub App installation token).
+
+    Returns:
+        The final PRReviewState after graph execution.
+    """
+    github_service = GitHubService(token=github_token)
+    raw_diff = github_service.fetch_diff(repo_name, owner, pr_number)
+
+    initial_state = PRReviewState(
+        pr_id=str(pr_number),
+        repo_name=repo_name,
+        pr_files=raw_diff,
+        owner=owner,
+        github_token=github_token or "",
+    )
+
+    graph = build_compiled_graph()
+    result = graph.invoke(initial_state.model_dump())
+    return PRReviewState.model_validate(result)
+
+
 def run_review_from_file(mock_path: str) -> PRReviewState:
     """Run PR review from a mock JSON file.
 
@@ -29,24 +62,16 @@ def run_review_from_file(mock_path: str) -> PRReviewState:
     Returns:
         The final PRReviewState after graph execution.
     """
-    github_service = GitHubService()
-
     with open(mock_path, encoding="utf-8") as f:
         mock = json.load(f)
 
     pr = mock["pull_request"]
     repo = mock["repository"]
-    raw_diff = github_service.fetch_diff(repo["name"], repo["owner"]["login"], pr["number"])
-
-    initial_state = PRReviewState(
-        pr_id=str(pr["number"]),
-        repo_name=f"{repo['owner']['login']}/{repo['name']}",
-        pr_files=raw_diff,
+    return run_review_from_payload(
+        repo_name=repo["name"],
+        owner=repo["owner"]["login"],
+        pr_number=pr["number"],
     )
-
-    graph = build_compiled_graph()
-    result = graph.invoke(initial_state.model_dump())
-    return PRReviewState.model_validate(result)
 
 
 def main() -> None:
