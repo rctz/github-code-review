@@ -66,8 +66,16 @@ async def handle_webhook(
     """Handle incoming GitHub webhook events."""
     body = await request.body()
 
+    logger.info(
+        "Webhook request: event=%s signature=%s content_length=%d",
+        x_github_event,
+        "present" if x_hub_signature_256 else "missing",
+        len(body),
+    )
+
     # Verify webhook signature
     if settings.github_webhook_secret and not _verify_signature(body, x_hub_signature_256):
+        logger.warning("Signature verification failed for event=%s", x_github_event)
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     # Only handle pull_request events
