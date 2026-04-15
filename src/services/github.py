@@ -12,6 +12,28 @@ logger = logging.getLogger(__name__)
 _GITHUB_API = "https://api.github.com"
 
 
+def find_line_in_file(file_content: str, code_snippet: str) -> tuple[int, int] | None:
+    """Find a code snippet in real file content and return its 1-based line range.
+
+    Does an exact substring search against the file. Returns ``(start, end)``
+    where both are 1-based line numbers, or ``None`` if not found.
+    """
+    snippet = code_snippet.strip()
+    if not snippet:
+        return None
+
+    file_lines = file_content.splitlines()
+    snippet_lines = snippet.splitlines()
+    n = len(snippet_lines)
+
+    for i in range(len(file_lines) - n + 1):
+        chunk = "\n".join(file_lines[i : i + n])
+        if chunk.strip() == snippet:
+            return (i + 1, i + n)  # 1-based
+
+    return None
+
+
 class GitHubService:
     """Abstracts all GitHub API interactions behind a clean interface."""
 
@@ -89,26 +111,149 @@ class GitHubService:
         wait=wait_exponential(min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
-    def create_pr_review(self, repo_name: str, pr_number: int, body: str, event: str = "COMMENT") -> bool:
-        """Create a PR review comment using the GitHub Reviews API.
+    def create_review_with_comments(
+        self,
+        repo_name: str,
+        pr_number: int,
+        commit_id: str,
+        comments: list[dict],
+        body: str = "",
+        event: str = "COMMENT",
+    ) -> bool:
+        """Create a PR review with multiple inline comments in a single API call.
+
+        Uses ``POST /repos/{owner}/{repo}/pulls/{pr_number}/reviews`` with a
+        ``comments`` array.  This avoids GitHub's secondary rate limit that
+        fires when posting comments one-by-one.
+
+        Each comment dict should contain:
+            - ``path`` (str, required)
+            - ``line`` (int, required)
+            - ``body`` (str, required)
+            - ``side`` (str, default "RIGHT")
+            - ``start_line`` (int, optional — for multi-line)
+            - ``start_side`` (str, optional — for multi-line)
+
+        Returns:
+            True if the review was created successfully.
+        """
+        url = f"{_GITHUB_API}/repos/{repo_name}/pulls/{pr_number}/reviews"
+        payload = {
+            "commit_id": commit_id,
+            "body": body,
+            "event": event,
+            "comments": comments,
+        }
+        resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+        success = resp.status_code == 200
+        if success:
+            logger.info(
+                "Created review with %d inline comments on %s#%d",
+                len(comments),
+                repo_name,
+                pr_number,
+            )
+        else:
+            logger.error(
+                "Failed to create review on %s#%d: HTTP %d %s",
+                repo_name,
+                pr_number,
+                resp.status_code,
+                resp.text[:300],
+            )
+        return success
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
+    def fetch_pr_head_sha(self, repo_name: str, owner: str, pr_id: int) -> str:
+        """Fetch the HEAD commit SHA of a pull request.
+
+        Args:
+            repo_name: Repository name (without owner).
+            owner: Repository owner.
+            pr_id: Pull request number.
+
+        Returns:
+            The SHA of the PR's head commit.
+        """
+        repo = self._client.get_repo(f"{owner}/{repo_name}")
+        pull = repo.get_pull(pr_id)
+        sha = pull.head.sha
+        logger.info("Fetched HEAD SHA %s for %s/%s#%d", sha[:7], owner, repo_name, pr_id)
+        return sha
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
+    def create_inline_comment(
+        self,
+        repo_name: str,
+        pr_number: int,
+        commit_id: str,
+        path: str,
+        line: int,
+        body: str,
+        side: str = "RIGHT",
+        start_line: int | None = None,
+        start_side: str | None = None,
+    ) -> bool:
+        """Create an inline review comment on a specific line of a PR diff.
+
+        Uses the GitHub "Create a review comment for a pull request" API:
+        POST /repos/{owner}/{repo}/pulls/{pull_number}/comments
 
         Args:
             repo_name: Full repo name (e.g., "owner/repo").
             pr_number: Pull request number.
-            body: The review body (markdown).
-            event: Review event type — "COMMENT", "APPROVE", or "REQUEST_CHANGES".
+            commit_id: The SHA of the commit the comment applies to.
+            path: The relative path to the file.
+            line: The line number in the diff the comment applies to.
+            body: The comment body (markdown).
+            side: "LEFT" (deletions) or "RIGHT" (additions/unchanged).
+            start_line: First line for multi-line comments.
+            start_side: Starting side for multi-line comments.
 
         Returns:
             True if successful.
         """
-        url = f"{_GITHUB_API}/repos/{repo_name}/pulls/{pr_number}/reviews"
-        payload = {"body": body, "event": event}
+        url = f"{_GITHUB_API}/repos/{repo_name}/pulls/{pr_number}/comments"
+        payload: dict = {
+            "body": body,
+            "commit_id": commit_id,
+            "path": path,
+            "line": line,
+            "side": side,
+        }
+        if start_line is not None:
+            payload["start_line"] = start_line
+        if start_side is not None:
+            payload["start_side"] = start_side
+
         resp = requests.post(url, headers=self._headers(), json=payload, timeout=10)
         success = resp.status_code == 201
         if success:
-            logger.info("Created PR review on %s#%d", repo_name, pr_number)
+            logger.info(
+                "Created inline comment on %s#%d — %s:%d",
+                repo_name,
+                pr_number,
+                path,
+                line,
+            )
         else:
-            logger.error("Failed to create PR review on %s#%d: HTTP %d", repo_name, pr_number, resp.status_code)
+            logger.error(
+                "Failed to create inline comment on %s#%d — %s:%d: HTTP %d %s",
+                repo_name,
+                pr_number,
+                path,
+                line,
+                resp.status_code,
+                resp.text[:200],
+            )
         return success
 
     @retry(
@@ -117,7 +262,7 @@ class GitHubService:
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     def post_pr_comment(self, repo_name: str, pr_number: int, body: str) -> bool:
-        """Post a review comment on a GitHub PR.
+        """Post a general comment on a GitHub PR (fallback for inline failures).
 
         Returns:
             True if successful.

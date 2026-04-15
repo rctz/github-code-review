@@ -1,7 +1,7 @@
 # Project Overview: LangGraph PR Review Bot
 
 ## 1. Description
-This project is an AI-powered GitHub Pull Request Review Bot built with **LangGraph** and **Python**. It receives GitHub Webhooks containing PR diffs, processes multiple files in parallel using a Map-Reduce (Fan-out/Fan-in) architecture, and posts a consolidated review comment back to GitHub.
+This project is an AI-powered GitHub Pull Request Review Bot built with **LangGraph** and **Python**. It receives GitHub Webhooks containing PR diffs, processes multiple files in parallel using a Map-Reduce (Fan-out/Fan-in) architecture, and posts **inline review comments** pointing to exact lines in the PR diff back to GitHub.
 
 Designed as an **organizational template** — teams can compose their own graphs by wiring together agents and nodes from the shared library.
 
@@ -85,6 +85,8 @@ The codebase enforces strict separation between concerns:
 │   │   ├── dependency_node.py  # dependency_node(state) -> dict
 │   │   ├── review_node.py      # review_node(state) -> dict
 │   │   ├── aggregate_node.py   # aggregate_node(state) -> dict
+│   │   ├── fetch_sha_node.py   # fetch_sha_node(state) -> dict (fetches PR HEAD SHA)
+│   │   ├── post_review_node.py # post_review_node(state) -> dict (posts inline comments)
 │   │   └── error_node.py       # error_node(state) -> dict (graceful failure)
 │   │
 │   ├── graph/
@@ -93,7 +95,7 @@ The codebase enforces strict separation between concerns:
 │   │
 │   └── services/
 │       ├── __init__.py
-│       └── github.py           # GitHubService (fetch_diff, fetch_file_content, post_pr_comment)
+│       └── github.py           # GitHubService + find_line_in_file utility
 │
 ├── entrypoints/                # Future: FastAPI webhook handler
 │   └── __init__.py
@@ -125,8 +127,11 @@ from typing import Annotated
 class PRReviewState(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     pr_id: str
+    owner: str
     repo_name: str
     pr_files: list[dict]
+    github_token: str = ""
+    head_sha: str = ""
     system_prompt: str = ""
     file_reviews: Annotated[list[str], operator.add] = []
     final_comment: str = ""
@@ -135,11 +140,13 @@ class PRReviewState(BaseModel):
 
 ### 5.2 Workflow Steps
 1. **`persona_node`** — calls `run_persona(repo_name)` → writes `system_prompt` to state.
-2. **`_map_files_to_review`** (conditional edge) — fans out one `Send("review_single_file", ...)` per file (deduplicates by filename).
-3. **`review_single_file`** (subgraph, runs in parallel per file):
+2. **`fetch_sha_node`** — fetches the PR's HEAD commit SHA → writes `head_sha` to state.
+3. **`_map_files_to_review`** (conditional edge) — fans out one `Send("review_single_file", ...)` per file (deduplicates by filename).
+4. **`review_single_file`** (subgraph, runs in parallel per file):
    - `dependency_node` → calls `run_dependency(diff)` → writes `dependency_context`
-   - `review_node` → calls `run_review(...)` → appends markdown to `file_reviews`
-4. **`aggregate_node`** — joins all `file_reviews` into `final_comment`.
+   - `review_node` → calls `run_review(...)` → appends JSON to `file_reviews`
+5. **`aggregate_node`** — joins all `file_reviews` into `final_comment`.
+6. **`post_review_node`** — posts **inline diff comments** pointing to exact lines (see §6).
 
 ### 5.3 Review Output Format
 Each file review is a JSON string matching `FileReviewOutput`:
@@ -150,14 +157,51 @@ Each file review is a JSON string matching `FileReviewOutput`:
     {
       "title": "SQL injection via string interpolation",
       "detail": "The query uses f-string interpolation with user input...",
-      "suggestion_for_change": "Use parameterized queries: db.execute('SELECT * FROM users WHERE name=?', [username])",
+      "existing_code_to_replace": "the exact 1-3 lines of code from the diff",
+      "suggestion_for_change": "Use parameterized queries",
+      "exact_code_replacement": "db.execute('SELECT * FROM users WHERE name=?', [username])",
       "critical_rate": "High"
     }
   ]
 }
 ```
 
-## 6. Key Implementation Rules
+## 6. Inline Review Comment System
+
+### 6.1 How It Works
+Instead of posting general issue comments, the bot posts **inline diff comments** that point to specific lines in the PR — exactly like a human reviewer clicking on a line in the GitHub diff view.
+
+For each `ReviewItem`, `post_review_node`:
+1. **Fetches the file content** from GitHub at the PR HEAD commit (`fetch_file_content`)
+2. **Finds the exact line number** by matching `existing_code_to_replace` against the real file content via `find_line_in_file()` — returns 1-based `(start_line, end_line)`
+3. **Posts an inline comment** via `create_inline_comment()` using the GitHub `POST /repos/{owner}/{repo}/pulls/{pull_number}/comments` API with `line`, `side=RIGHT`, `commit_id`, and `path`
+4. **Falls back** to a general PR comment if line resolution fails
+
+### 6.2 Why File-Content Matching (Not Diff Parsing)
+The line resolver uses **real file content** instead of parsing the unified diff. This avoids a class of bugs:
+- **Diff parsing is fragile** — tracking new-side line numbers across `+`/`-`/` ` lines is error-prone; interleaved deletions cause line counter drift
+- **Off-by-one errors** — the `@@ -a +b @@` header starts at line `b`, but context/deletion lines shift counters differently
+- **Whitespace mismatch** — diff lines have `+`/`-`/` ` prefixes that must be stripped; context lines carry a leading space
+- **Same commit guarantee** — `fetch_file_content(ref=head_sha)` uses the same SHA passed as `commit_id` to the comment API, so file state and line numbers are always consistent
+
+### 6.3 GitHubService Methods (`src/services/github.py`)
+
+| Method | API Endpoint | Purpose |
+|---|---|---|
+| `fetch_diff` | PyGithub | Fetch PR file diffs |
+| `fetch_file_content` | `GET /repos/{owner}/{repo}/contents/{path}` | Fetch real file at a given ref |
+| `fetch_pr_head_sha` | PyGithub | Get PR HEAD commit SHA |
+| `create_inline_comment` | `POST /repos/{owner}/{repo}/pulls/{pr}/comments` | Post inline review comment on diff line |
+| `create_pr_review` | `POST /repos/{owner}/{repo}/pulls/{pr}/reviews` | Create a PR review (APPROVE/COMMENT/REQUEST_CHANGES) |
+| `post_pr_comment` | `POST /repos/{owner}/{repo}/issues/{pr}/comments` | Post general issue comment (fallback) |
+
+### 6.4 Module-level utility: `find_line_in_file`
+```python
+def find_line_in_file(file_content: str, code_snippet: str) -> tuple[int, int] | None
+```
+Searches the real file content for an exact stripped match of `code_snippet`. Returns `(start_line, end_line)` (1-based) or `None`. File contents are cached per file in `post_review_node` so each file is fetched only once.
+
+## 7. Key Implementation Rules
 
 - **Agent signature:** Agents accept plain Python args and return plain values or Pydantic models — never state objects.
 - **Node signature:** Nodes accept a Pydantic state model and return `dict` — never call LLM directly.
@@ -167,10 +211,11 @@ Each file review is a JSON string matching `FileReviewOutput`:
 - **Prompt access:** Import from `prompts/` module — never inline prompt strings in agents.
 - **Configuration:** Use `from config.settings import settings` — never call `os.getenv()` or `load_dotenv()` directly.
 - **GitHub API:** Use `GitHubService` class — never call PyGithub or requests directly outside of `services/`.
+- **Inline comments:** Use `create_inline_comment` with `side=RIGHT` and line numbers from `find_line_in_file` — never parse the diff for line numbers.
 - **Error handling:** Nodes catch exceptions and return fallback values. Wire `error_node` for catastrophic failures.
 - **Retry logic:** Handled by `tenacity` in providers and services (max 3 attempts, exponential backoff). Do not add retries at the graph level.
 
-## 7. Adding New Components
+## 8. Adding New Components
 
 ### New Agent/Node Pair
 1. Create `src/agents/<name>.py` with `run_<name>(plain_args...) -> OutputType`.
@@ -187,7 +232,7 @@ Each file review is a JSON string matching `FileReviewOutput`:
 1. Create `entrypoints/webhook.py` with FastAPI app.
 2. Import `build_compiled_graph()` and `PRReviewState` from `src/`.
 
-## 8. Running the Project
+## 9. Running the Project
 
 ```bash
 # Install dependencies

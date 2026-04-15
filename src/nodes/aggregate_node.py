@@ -21,7 +21,8 @@ def aggregate_node(state: PRReviewState) -> dict:
     for raw in state.file_reviews:
         parsed = _parse_file_review(raw)
         if parsed:
-            parts.append(parsed.to_markdown())
+            if parsed.reviews:
+                parts.append(parsed.to_markdown())
         else:
             parts.append(raw)
 

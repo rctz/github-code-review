@@ -14,6 +14,7 @@ class PRReviewState(BaseModel):
     repo_name: str
     pr_files: list[dict]
     github_token: str = ""
+    head_sha: str = ""
     system_prompt: str = ""
     file_reviews: Annotated[list[str], operator.add] = []
     final_comment: str = ""
