@@ -1,11 +1,11 @@
 # ── Stage 1: Build dependencies ──────────────────────────────────────
 FROM python:3.12-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN pip install --no-cache-dir uv
 
 WORKDIR /build
 
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src/ src/
 
 RUN uv venv /opt/venv && \
@@ -25,6 +25,7 @@ COPY src/ src/
 COPY entrypoints/ entrypoints/
 
 ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/app/src" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
