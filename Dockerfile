@@ -5,11 +5,11 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /build
 
-COPY pyproject.toml .
+COPY pyproject.toml uv.lock ./
 COPY src/ src/
 
 RUN uv venv /opt/venv && \
-    UV_PROJECT_ENVIRONMENT=/opt/venv uv pip install --no-dev .
+    UV_PROJECT_ENVIRONMENT=/opt/venv uv sync --no-dev --frozen
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────
 FROM python:3.12-slim
