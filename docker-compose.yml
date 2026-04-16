@@ -5,7 +5,10 @@ services:
       - "${WEBHOOK_PORT:-8000}:8000"
     env_file:
       - .env
+    volumes:
+      - ${GITHUB_APP_PRIVATE_KEY}:/app/private-key.pem:ro
     environment:
+      - GITHUB_APP_PRIVATE_KEY=/app/private-key.pem
       - WEBHOOK_HOST=0.0.0.0
       - WEBHOOK_PORT=8000
     healthcheck:
