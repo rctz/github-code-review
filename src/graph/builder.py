@@ -39,18 +39,20 @@ def _map_files_to_review(state: PRReviewState) -> list[Send]:
             logger.info("Skipping file with no diff: %s", filename)
             continue
         seen.add(filename)
+        file = SingleFileState(
+            pr_id=state.pr_id,
+            owner=state.owner,
+            repo_name=state.repo_name,
+            head_sha=state.head_sha,
+            github_token=state.github_token,
+            filename=filename,
+            diff=diff,
+            system_prompt=state.system_prompt,
+        )
         sends.append(
             Send(
                 "review_single_file",
-                {
-                    "pr_id": state.pr_id,
-                    "repo_name": state.repo_name,
-                    "filename": filename,
-                    "diff": diff,
-                    "system_prompt": state.system_prompt,
-                    "dependency_context": "",
-                    "file_reviews": [],
-                },
+                file,
             )
         )
     logger.info("Fan-out: %d files to review", len(sends))

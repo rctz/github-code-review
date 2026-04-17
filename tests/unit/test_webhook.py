@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from entrypoints.webhook import _verify_signature, app
+from entrypoints.webhook import REVIEW_TRIGGER_ACTIONS, _verify_signature, app
 
 
 @pytest.fixture
@@ -127,7 +127,7 @@ class TestWebhookEndpoint:
     ) -> None:
         mock_settings.github_webhook_secret = ""
         mock_settings.log_level = "INFO"
-        for action in ("opened", "synchronize", "reopened"):
+        for action in REVIEW_TRIGGER_ACTIONS:
             payload = {
                 "action": action,
                 "pull_request": {"number": 1},

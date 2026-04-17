@@ -35,9 +35,13 @@ def _make_initial_state() -> dict:
 
 class TestGraphIntegration:
     @patch("nodes.review_node.run_review")
+    @patch("nodes.dependency_node.run_dependency")
     @patch("nodes.persona_node.run_persona")
-    def test_full_graph_execution(self, mock_persona: MagicMock, mock_review: MagicMock) -> None:
+    def test_full_graph_execution(
+        self, mock_persona: MagicMock, mock_dep: MagicMock, mock_review: MagicMock
+    ) -> None:
         mock_persona.return_value = "You are a senior Python reviewer."
+        mock_dep.return_value = "No external dependencies detected in this diff."
         mock_review.return_value = _make_review_output()
 
         graph = build_compiled_graph()
@@ -51,9 +55,13 @@ class TestGraphIntegration:
         assert mock_review.call_count == 2
 
     @patch("nodes.review_node.run_review")
+    @patch("nodes.dependency_node.run_dependency")
     @patch("nodes.persona_node.run_persona")
-    def test_graph_deduplicates_files(self, mock_persona: MagicMock, mock_review: MagicMock) -> None:
+    def test_graph_deduplicates_files(
+        self, mock_persona: MagicMock, mock_dep: MagicMock, mock_review: MagicMock
+    ) -> None:
         mock_persona.return_value = "Reviewer persona."
+        mock_dep.return_value = "No external dependencies detected in this diff."
         mock_review.return_value = _make_review_output("dup.py")
 
         state = PRReviewState(
@@ -73,9 +81,13 @@ class TestGraphIntegration:
         assert mock_review.call_count == 1
 
     @patch("nodes.review_node.run_review")
+    @patch("nodes.dependency_node.run_dependency")
     @patch("nodes.persona_node.run_persona")
-    def test_graph_handles_review_failure(self, mock_persona: MagicMock, mock_review: MagicMock) -> None:
+    def test_graph_handles_review_failure(
+        self, mock_persona: MagicMock, mock_dep: MagicMock, mock_review: MagicMock
+    ) -> None:
         mock_persona.return_value = "Reviewer."
+        mock_dep.return_value = "No external dependencies detected in this diff."
         mock_review.side_effect = RuntimeError("LLM down")
 
         graph = build_compiled_graph()

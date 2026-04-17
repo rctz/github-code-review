@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="PR Review Bot Webhook")
 
-_REVIEW_TRIGGER_ACTIONS = {"opened", "reopened"}
+REVIEW_TRIGGER_ACTIONS = {"opened", "reopened"}
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
@@ -85,7 +85,7 @@ async def handle_webhook(
     payload = await request.json()
     action = payload.get("action", "")
 
-    if action not in _REVIEW_TRIGGER_ACTIONS:
+    if action not in REVIEW_TRIGGER_ACTIONS:
         return {"status": "ignored", "reason": f"action '{action}' not handled"}
 
     pr = payload["pull_request"]

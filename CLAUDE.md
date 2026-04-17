@@ -75,7 +75,7 @@ The codebase enforces strict separation between concerns:
 │   ├── agents/
 │   │   ├── __init__.py
 │   │   ├── persona.py          # run_persona(repo_name) -> str
-│   │   ├── dependency.py       # run_dependency(diff) -> str
+│   │   ├── dependency.py       # run_dependency(filename, diff, repo_name, head_sha, github_service) -> str
 │   │   └── review.py           # run_review(...) -> FileReviewOutput
 │   │                           #   Also: ReviewItem, FileReviewOutput (Pydantic)
 │   │
@@ -95,6 +95,7 @@ The codebase enforces strict separation between concerns:
 │   │
 │   └── services/
 │       ├── __init__.py
+│       ├── dependency_resolver.py  # Strategy pattern: DependencyResolver ABC + CppResolver + PythonResolver + registry
 │       └── github.py           # GitHubService + find_line_in_file utility
 │
 ├── entrypoints/                # Future: FastAPI webhook handler
@@ -107,6 +108,7 @@ The codebase enforces strict separation between concerns:
     ├── unit/
     │   ├── __init__.py
     │   ├── test_agents.py       # Agent unit tests
+    │   ├── test_dependency_resolver.py  # Resolver strategy tests
     │   ├── test_nodes.py        # Node unit tests
     │   ├── test_providers.py    # Provider factory + abstract tests
     │   └── test_services_github.py  # GitHub service tests
@@ -120,10 +122,6 @@ The codebase enforces strict separation between concerns:
 ### 5.1 State Definitions (`src/state/models.py`)
 Pydantic models with LangGraph reducer annotations:
 ```python
-from pydantic import BaseModel, ConfigDict
-import operator
-from typing import Annotated
-
 class PRReviewState(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     pr_id: str
@@ -136,14 +134,28 @@ class PRReviewState(BaseModel):
     file_reviews: Annotated[list[str], operator.add] = []
     final_comment: str = ""
     error: str = ""
+
+class SingleFileState(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    pr_id: str
+    owner: str = ""
+    repo_name: str
+    head_sha: str = ""
+    github_token: str = ""
+    filename: str
+    diff: str = ""
+    system_prompt: str = ""
+    dependency_context: str = ""
+    file_reviews: Annotated[list[str], operator.add] = []
 ```
+`owner`, `head_sha`, and `github_token` are passed from `PRReviewState` through the `Send` fan-out so the dependency node can call `GitHubService`.
 
 ### 5.2 Workflow Steps
 1. **`persona_node`** — calls `run_persona(repo_name)` → writes `system_prompt` to state.
 2. **`fetch_sha_node`** — fetches the PR's HEAD commit SHA → writes `head_sha` to state.
-3. **`_map_files_to_review`** (conditional edge) — fans out one `Send("review_single_file", ...)` per file (deduplicates by filename).
+3. **`_map_files_to_review`** (conditional edge) — fans out one `Send("review_single_file", ...)` per file (deduplicates by filename). Passes `owner`, `head_sha`, `github_token` into each `SingleFileState`.
 4. **`review_single_file`** (subgraph, runs in parallel per file):
-   - `dependency_node` → calls `run_dependency(diff)` → writes `dependency_context`
+   - `dependency_node` → resolves dependency file paths via `RESOLVER_REGISTRY`, fetches actual content via `GitHubService`, formats into `dependency_context` (see §7)
    - `review_node` → calls `run_review(...)` → appends JSON to `file_reviews`
 5. **`aggregate_node`** — joins all `file_reviews` into `final_comment`.
 6. **`post_review_node`** — posts **inline diff comments** pointing to exact lines (see §6).
@@ -201,7 +213,42 @@ def find_line_in_file(file_content: str, code_snippet: str) -> tuple[int, int] |
 ```
 Searches the real file content for an exact stripped match of `code_snippet`. Returns `(start_line, end_line)` (1-based) or `None`. File contents are cached per file in `post_review_node` so each file is fetched only once.
 
-## 7. Key Implementation Rules
+## 7. Dependency Resolution System
+
+### 7.1 Strategy Pattern (Registry)
+Dependency resolution uses the Strategy Pattern via a file-extension registry (`src/services/dependency_resolver.py`). Each resolver guesses candidate file paths from the diff content, then the node fetches actual content via `GitHubService`.
+
+```python
+class DependencyResolver(ABC):
+    def guess_paths(self, filename: str, content: str, repo_name: str) -> list[str]: ...
+
+RESOLVER_REGISTRY: dict[str, DependencyResolver] = {
+    ".cpp": CppResolver(), ".cc": CppResolver(), ".cxx": CppResolver(), ".c": CppResolver(),
+    ".hpp": CppResolver(), ".h": CppResolver(),
+    ".py": PythonResolver(),
+}
+
+def get_resolver(filename: str) -> DependencyResolver | None: ...
+```
+
+### 7.2 Resolver Implementations
+
+| Resolver | Extensions | Heuristic |
+|---|---|---|
+| `CppResolver` | `.cpp`, `.cc`, `.cxx`, `.c`, `.hpp`, `.h` | Parses `+#include` lines. For `"..."` includes: same-dir header + `include/` dir. For `<...>` includes: `include/` dir + ROS2 `include/<pkg>/` pattern. `pkg_name` extracted from `repo_name`. |
+| `PythonResolver` | `.py` | Parses `+from X import Y` and `+import X.Y` lines. Converts dotted imports to file paths (`a.b.c` → `a/b/c.py`, `a/b/c/__init__.py`). Filters out stdlib modules (`os`, `sys`, `json`, etc.). |
+
+### 7.3 Data Flow
+1. **`dependency_node`** — looks up resolver by file extension, constructs `GitHubService(token=state.github_token)`, calls `run_dependency()`.
+2. **`run_dependency`** (agent) — calls `resolver.guess_paths()` to get candidates, fetches up to `LIMIT_IMPORT_CHECK=7` files via `GitHubService.fetch_file_content()`, skips errors, formats with `DEPENDENCY_CONTEXT_TEMPLATE`.
+3. **Output** — formatted dependency context string (or `NO_DEPENDENCIES_MESSAGE` if nothing found), written to `state.dependency_context`.
+
+### 7.4 Adding a New Resolver
+1. Create a class implementing `DependencyResolver` in `src/services/dependency_resolver.py`.
+2. Register it in `RESOLVER_REGISTRY` with the target file extension(s).
+3. No changes to agents, nodes, or graph needed — the registry handles routing automatically.
+
+## 8. Key Implementation Rules
 
 - **Agent signature:** Agents accept plain Python args and return plain values or Pydantic models — never state objects.
 - **Node signature:** Nodes accept a Pydantic state model and return `dict` — never call LLM directly.
@@ -211,11 +258,12 @@ Searches the real file content for an exact stripped match of `code_snippet`. Re
 - **Prompt access:** Import from `prompts/` module — never inline prompt strings in agents.
 - **Configuration:** Use `from config.settings import settings` — never call `os.getenv()` or `load_dotenv()` directly.
 - **GitHub API:** Use `GitHubService` class — never call PyGithub or requests directly outside of `services/`.
+- **Dependency resolution:** Use `get_resolver(filename)` from `RESOLVER_REGISTRY` — never build if-else chains for file-type logic.
 - **Inline comments:** Use `create_inline_comment` with `side=RIGHT` and line numbers from `find_line_in_file` — never parse the diff for line numbers.
 - **Error handling:** Nodes catch exceptions and return fallback values. Wire `error_node` for catastrophic failures.
 - **Retry logic:** Handled by `tenacity` in providers and services (max 3 attempts, exponential backoff). Do not add retries at the graph level.
 
-## 8. Adding New Components
+## 9. Adding New Components
 
 ### New Agent/Node Pair
 1. Create `src/agents/<name>.py` with `run_<name>(plain_args...) -> OutputType`.
@@ -228,11 +276,16 @@ Searches the real file content for an exact stripped match of `code_snippet`. Re
 2. Add routing logic in `src/providers/factory.py`.
 3. Add model enum values in `src/providers/models.py` if needed.
 
+### New Dependency Resolver
+1. Create a class implementing `DependencyResolver` in `src/services/dependency_resolver.py`.
+2. Register it in `RESOLVER_REGISTRY` with the target file extension(s).
+3. No changes to agents, nodes, or graph needed — the registry handles routing automatically.
+
 ### New Entry Point (e.g., FastAPI Webhook)
 1. Create `entrypoints/webhook.py` with FastAPI app.
 2. Import `build_compiled_graph()` and `PRReviewState` from `src/`.
 
-## 9. Running the Project
+## 10. Running the Project
 
 ```bash
 # Install dependencies

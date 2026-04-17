@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from agents.dependency import _extract_imported_files, run_dependency
+from agents.dependency import run_dependency
 from agents.persona import run_persona
 from agents.review import FileReviewOutput, ReviewItem, _parse_response, run_review
 
@@ -33,29 +33,85 @@ class TestPersonaAgent:
 
 
 class TestDependencyAgent:
-    def test_extract_python_imports(self) -> None:
-        diff = "+from utils import helper\n+import os\n-some line"
-        result = _extract_imported_files(diff)
-        assert "utils" in result or "os" in result
+    def _make_mock_service(self, **overrides: str) -> MagicMock:
+        service = MagicMock()
+        service.fetch_file_content.return_value = overrides.get(
+            "content", "def helper(): pass"
+        )
+        return service
 
-    def test_extract_js_imports(self) -> None:
-        diff = '+require("express")\n+import "lodash"'
-        result = _extract_imported_files(diff)
-        assert len(result) > 0
+    def test_no_resolver_for_unknown_ext(self) -> None:
+        service = self._make_mock_service()
+        result = run_dependency(
+            filename="README.md",
+            diff="+some change",
+            repo_name="owner/repo",
+            head_sha="abc123",
+            github_service=service,
+        )
+        assert result == "No external dependencies detected in this diff."
+        service.fetch_file_content.assert_not_called()
 
-    def test_no_imports_returns_empty(self) -> None:
-        diff = "+x = 1\n+y = 2"
-        result = _extract_imported_files(diff)
-        assert result == []
+    def test_python_imports_fetch_content(self) -> None:
+        service = self._make_mock_service()
+        result = run_dependency(
+            filename="src/app.py",
+            diff="+from utils import helper",
+            repo_name="owner/repo",
+            head_sha="abc123",
+            github_service=service,
+        )
+        assert "###" in result
+        assert "utils" in result
+        service.fetch_file_content.assert_called()
 
-    def test_run_dependency_no_imports(self) -> None:
-        result = run_dependency("+x = 1")
+    def test_fetch_error_skipped(self) -> None:
+        service = MagicMock()
+        service.fetch_file_content.return_value = "[Error fetching utils.py: HTTP 404]"
+        result = run_dependency(
+            filename="src/app.py",
+            diff="+from utils import helper",
+            repo_name="owner/repo",
+            head_sha="abc123",
+            github_service=service,
+        )
         assert result == "No external dependencies detected in this diff."
 
-    def test_run_dependency_with_imports(self) -> None:
-        diff = "+import os\n+import sys"
-        result = run_dependency(diff)
+    def test_cpp_resolver_fetches_headers(self) -> None:
+        service = self._make_mock_service()
+        result = run_dependency(
+            filename="src/node.cpp",
+            diff='+#include "node.hpp"',
+            repo_name="org/my_pkg",
+            head_sha="abc123",
+            github_service=service,
+        )
         assert "###" in result
+        service.fetch_file_content.assert_called()
+
+    def test_no_imports_returns_no_deps_message(self) -> None:
+        service = self._make_mock_service()
+        result = run_dependency(
+            filename="app.py",
+            diff="+x = 1",
+            repo_name="owner/repo",
+            head_sha="abc123",
+            github_service=service,
+        )
+        assert result == "No external dependencies detected in this diff."
+
+    def test_calls_fetch_with_correct_args(self) -> None:
+        service = self._make_mock_service()
+        run_dependency(
+            filename="src/app.py",
+            diff="+from utils import helper",
+            repo_name="owner/repo",
+            head_sha="deadbeef",
+            github_service=service,
+        )
+        call_args = service.fetch_file_content.call_args_list[0]
+        assert call_args[0][0] == "owner/repo"
+        assert call_args[1]["ref"] == "deadbeef"
 
 
 class TestReviewAgent:

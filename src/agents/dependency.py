@@ -1,47 +1,51 @@
 import logging
-import re
 
 from prompts.dependency import DEPENDENCY_CONTEXT_TEMPLATE, NO_DEPENDENCIES_MESSAGE
+from services.dependency_resolver import get_resolver
+from services.github import GitHubService
 
 logger = logging.getLogger(__name__)
 
 LIMIT_IMPORT_CHECK = 7
+_CONTENT_TRUNCATE = 500
 
 
-def _extract_imported_files(diff: str) -> list[str]:
-    """Parse diff for added import/require/include lines and extract file paths."""
-    patterns = [
-        r"^\+\s*(?:from|import)\s+([\w./]+)",
-        r'^\+\s*(?:import|require)\s+["\'](.+?)["\']',
-        r'^\+\s*#include\s+[<"](.+?)[>"]',
-    ]
-    files: list[str] = []
-    for line in diff.splitlines():
-        for pattern in patterns:
-            match = re.match(pattern, line)
-            if match:
-                files.append(match.group(1))
-    return list(set(files))
-
-
-def run_dependency(diff: str) -> str:
-    """Identify file dependencies from a diff and format context.
+def run_dependency(
+    filename: str,
+    diff: str,
+    repo_name: str,
+    head_sha: str,
+    github_service: GitHubService,
+) -> str:
+    """Resolve and fetch dependency context for a single file.
 
     Args:
+        filename: The file being reviewed (e.g. "src/nodes/review_node.cpp").
         diff: The unified diff string.
+        repo_name: Full repo name (e.g. "owner/repo").
+        head_sha: Commit SHA to fetch files at.
+        github_service: GitHubService instance for API calls.
 
     Returns:
         A dependency context string for the review prompt.
     """
-    imported = _extract_imported_files(diff)
-    if not imported:
+    resolver = get_resolver(filename)
+    if not resolver:
+        return NO_DEPENDENCIES_MESSAGE
+
+    candidates = resolver.guess_paths(filename, diff, repo_name)
+    if not candidates:
         return NO_DEPENDENCIES_MESSAGE
 
     parts: list[str] = []
-    for imp in imported[:LIMIT_IMPORT_CHECK]:
-        path = imp.replace(".", "/") + ".py" if "." in imp and "/" not in imp else imp
-        # TODO: Fetch actual file content via GitHubService
-        content = ""
-        parts.append(DEPENDENCY_CONTEXT_TEMPLATE.format(path=path, content=content[:500]))
+    for path in candidates[:LIMIT_IMPORT_CHECK]:
+        content = github_service.fetch_file_content(repo_name, path, ref=head_sha)
+        if content.startswith("[Error"):
+            logger.debug("Dependency not found: %s", path)
+            continue
+        parts.append(DEPENDENCY_CONTEXT_TEMPLATE.format(path=path, content=content[:_CONTENT_TRUNCATE]))
+
+    if not parts:
+        return NO_DEPENDENCIES_MESSAGE
 
     return "\n\n".join(parts)

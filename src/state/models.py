@@ -27,7 +27,10 @@ class SingleFileState(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     pr_id: str
+    owner: str = ""
     repo_name: str
+    head_sha: str = ""
+    github_token: str = ""
     filename: str
     diff: str = ""
     system_prompt: str = ""

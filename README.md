@@ -78,16 +78,30 @@ src/
 ├── agents/          Pure LLM logic (no LangGraph awareness)
 ├── nodes/           Thin wrappers: LangGraph state ↔ agent calls
 ├── graph/           Orchestration (subgraphs, edges, fan-out/fan-in)
-├── services/        External APIs (GitHub)
+├── services/        External APIs (GitHub) + dependency resolver
 └── main.py          CLI entry point
 ```
 
 **Workflow:**
 
 1. `persona_node` — generates a reviewer system prompt from the repo name
-2. Fan-out — one parallel subgraph per file (deduplicates by filename)
-3. Each subgraph: `dependency_node` → `review_node`
-4. `aggregate_node` — merges all file reviews into a single markdown comment
+2. `fetch_sha_node` — fetches the PR HEAD commit SHA
+3. Fan-out — one parallel subgraph per file (deduplicates by filename), passes `owner`, `head_sha`, `github_token` to each
+4. Each subgraph: `dependency_node` → `review_node`
+   - `dependency_node` resolves dependency file paths via a Strategy Pattern registry, fetches actual content from GitHub, and formats dependency context
+5. `aggregate_node` — merges all file reviews into a single markdown comment
+6. `post_review_node` — posts inline review comments pointing to exact diff lines
+
+## Dependency Resolution
+
+The bot uses a **Strategy Pattern registry** (`src/services/dependency_resolver.py`) to guess and fetch code dependencies before review:
+
+| Resolver | Extensions | Strategy |
+|---|---|---|
+| `CppResolver` | `.cpp`, `.cc`, `.cxx`, `.c`, `.hpp`, `.h` | Parses `#include` lines. Guesses same-dir headers, `include/` paths, and ROS2 `include/<pkg>/` patterns. |
+| `PythonResolver` | `.py` | Parses `from X import Y` / `import X.Y`. Converts dotted imports to file paths, filters stdlib modules. |
+
+The registry is extensible — add new resolvers without modifying agents, nodes, or graph structure.
 
 ## Testing
 
@@ -129,7 +143,8 @@ uv run pytest --tb=short -q
 
 | Suite | File | What it covers |
 |---|---|---|
-| Agents | `tests/unit/test_agents.py` | Persona, dependency, review logic |
+| Agents | `tests/unit/test_agents.py` | Persona, dependency (with resolver + mock GitHub), review logic |
+| Resolver | `tests/unit/test_dependency_resolver.py` | CppResolver, PythonResolver, registry lookup |
 | Nodes | `tests/unit/test_nodes.py` | LangGraph node wrappers + error handling |
 | Providers | `tests/unit/test_providers.py` | Factory pattern, model enum, ABC |
 | Services | `tests/unit/test_services_github.py` | GitHub API (fetch diff, post comment) |
@@ -165,6 +180,12 @@ uv run ruff format src/ tests/
 1. `src/providers/<name>.py` — implement `LLMProvider` ABC
 2. Add routing in `src/providers/factory.py`
 3. Add model enum in `src/providers/models.py`
+
+### New Dependency Resolver
+
+1. `src/services/dependency_resolver.py` — implement `DependencyResolver` ABC
+2. Register in `RESOLVER_REGISTRY` with target file extension(s)
+3. No changes needed to agents, nodes, or graph — the registry handles routing automatically
 
 ### FastAPI Webhook (Future)
 
