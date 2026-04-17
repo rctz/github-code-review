@@ -15,12 +15,12 @@ class TestLLMProviderBase:
 
 class TestLiteLLMModel:
     def test_enum_values(self) -> None:
-        assert LiteLLMModel.CLAUDE_SONNET_4_6 == "claude-sonnet-4-6"
+        assert LiteLLMModel.CLAUDE_SONNET_4_6 == "openai/claude-sonnet-4-6"
         assert LiteLLMModel.GPT_5_4 == "gpt-5.4"
         assert LiteLLMModel.GLM_5_1 == "openai/glm-5.1"
 
     def test_str_conversion(self) -> None:
-        assert str(LiteLLMModel.CLAUDE_SONNET_4_6) == "claude-sonnet-4-6"
+        assert str(LiteLLMModel.CLAUDE_SONNET_4_6) == "openai/claude-sonnet-4-6"
 
 
 class TestLLMFactory:

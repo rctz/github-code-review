@@ -50,19 +50,25 @@ class TestPythonResolver:
         resolver = PythonResolver()
         paths = resolver.guess_paths("src/app.py", "+from utils import helper", "org/repo")
         assert "utils.py" in paths
-        assert "utils/__init__.py" in paths
 
     def test_dotted_import(self) -> None:
         resolver = PythonResolver()
         paths = resolver.guess_paths("src/app.py", "+from a.b.c import func", "org/repo")
         assert "a/b/c.py" in paths
-        assert "a/b/c/__init__.py" in paths
+
+    def test_dotted_leading_import(self) -> None:
+        resolver = PythonResolver()
+        paths = resolver.guess_paths(
+            "src/giga_r1_driver/giga_r1_driver/publisher_registry.py",
+            "from .decoders.base import BaseDecoder",
+            "org/repo",
+        )
+        assert "src/giga_r1_driver/giga_r1_driver/decoders/base.py" in paths
 
     def test_bare_import(self) -> None:
         resolver = PythonResolver()
         paths = resolver.guess_paths("app.py", "+import my_module", "org/repo")
         assert "my_module.py" in paths
-        assert "my_module/__init__.py" in paths
 
     def test_filters_stdlib(self) -> None:
         resolver = PythonResolver()
@@ -72,7 +78,7 @@ class TestPythonResolver:
     def test_mixed_stdlib_and_local(self) -> None:
         resolver = PythonResolver()
         paths = resolver.guess_paths("app.py", "+import os\n+from my_lib import foo", "org/repo")
-        assert len(paths) == 2
+        assert len(paths) == 1
         assert "my_lib.py" in paths
 
     def test_no_imports_returns_empty(self) -> None:

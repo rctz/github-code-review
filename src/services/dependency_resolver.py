@@ -67,7 +67,7 @@ _STDLIB_MODULES: frozenset[str] = frozenset(
 )
 
 _RE_CPP_INCLUDE = re.compile(r'^\+\s*#include\s+([<"])(.+?)[>"]')
-_RE_PY_IMPORT = re.compile(r'^\+\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))')
+_RE_PY_IMPORT = re.compile(r"^\+?\s*(?:from\s+(\.+[\w.]*|[\w.]+)\s+import|import\s+([\w.]+))")
 
 
 class DependencyResolver(ABC):
@@ -113,28 +113,37 @@ class PythonResolver(DependencyResolver):
     """Resolve Python import dependencies by converting dotted imports to file paths."""
 
     def guess_paths(self, filename: str, content: str, repo_name: str) -> list[str]:
+        file_dir = PurePosixPath(filename).parent
         seen: set[str] = set()
         candidates: list[str] = []
 
         for line in content.splitlines():
             match = _RE_PY_IMPORT.match(line)
+
             if not match:
                 continue
             module = match.group(1) or match.group(2)
             if not module:
                 continue
-            root = module.split(".")[0]
-            if root in _STDLIB_MODULES:
-                continue
 
-            parts = module.split(".")
-            path = "/".join(parts)
+            if module.startswith("."):
+                dots = len(module) - len(module.lstrip("."))
+                relative_part = module.lstrip(".")
+                base = file_dir
+                for _ in range(dots - 1):
+                    base = base.parent
+                path = str(base / relative_part.replace(".", "/")) if relative_part else str(base)
+            else:
+                root = module.split(".")[0]
+                if root in _STDLIB_MODULES:
+                    continue
+                path = module.replace(".", "/")
 
             if path not in seen:
                 seen.add(path)
                 candidates.append(f"{path}.py")
-                candidates.append(f"{path}/__init__.py")
-
+                # candidates.append(f"{path}/__init__.py")
+        print(candidates)
         return candidates
 
 
