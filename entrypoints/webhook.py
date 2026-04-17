@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="PR Review Bot Webhook")
 
-_REVIEW_TRIGGER_ACTIONS = {"opened", "synchronize", "reopened"}
+_REVIEW_TRIGGER_ACTIONS = {"opened", "reopened"}
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
