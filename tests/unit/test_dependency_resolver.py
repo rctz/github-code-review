@@ -1,7 +1,9 @@
-from services.dependency_resolver import (
+from services.dependency import (
     RESOLVER_REGISTRY,
     CppResolver,
     PythonResolver,
+    Ros2AmentWorkspacePlugin,
+    Ros2InterfacePlugin,
     get_resolver,
 )
 
@@ -65,6 +67,34 @@ class TestPythonResolver:
         )
         assert "src/giga_r1_driver/giga_r1_driver/decoders/base.py" in paths
 
+    def test_nest_ros_pattern_import(self) -> None:
+        resolver = PythonResolver(plugins=[Ros2InterfacePlugin(), Ros2AmentWorkspacePlugin()])
+        paths = resolver.guess_paths(
+            "src/giga_r1_driver/src/node.py",
+            """import rclpy
+            from rclpy.node import Node
+            from rclpy.executors import MultiThreadedExecutor
+            from std_msgs.msg import Bool
+
+            from giga_r1_driver_interfaces.srv import SetConfig, SetGroup, SaveConfig, GetConfig
+
+            from giga_r1_driver.protocol import MSG_TYPE_STATUS, MSG_TYPE_ACK, MSG_TYPE_CONFIG, MSG_TYPE_ERROR
+            from giga_r1_driver.serial_reader import SerialReader
+            from giga_r1_driver.publisher_registry import PublisherRegistry
+            from giga_r1_driver.group_publisher import GroupPublisher
+            from giga_r1_driver.config_persistence import ConfigPersistence""",
+            "org/repo",
+        )
+        print(paths)
+
+        assert "src/giga_r1_driver/giga_r1_driver/protocol.py" in paths
+        assert "src/giga_r1_driver/giga_r1_driver/serial_reader.py" in paths
+        assert "src/giga_r1_driver/giga_r1_driver/publisher_registry.py" in paths
+        assert "src/giga_r1_driver/giga_r1_driver/group_publisher.py" in paths
+        assert "src/giga_r1_driver/giga_r1_driver/config_persistence.py" in paths
+        assert "src/giga_r1_driver_interfaces/srv/SetConfig.srv" in paths
+        assert "src/giga_r1_driver_interfaces/srv/SetGroup.srv" in paths
+
     def test_bare_import(self) -> None:
         resolver = PythonResolver()
         paths = resolver.guess_paths("app.py", "+import my_module", "org/repo")
@@ -90,6 +120,38 @@ class TestPythonResolver:
         resolver = PythonResolver()
         paths = resolver.guess_paths("app.py", "-import my_lib\n+x = 1", "org/repo")
         assert paths == []
+
+    def test_import_custom_pattern_1(self) -> None:
+        resolver = PythonResolver()
+        paths = resolver.guess_paths(
+            "robot_gateway/http_bridge/node.py",
+            """from common.exceptions import (
+            EditMapException,
+            GetMapException,
+            LoadMapException,
+            SaveMapException,
+            ServiceCallException,
+            DeleteMapException,
+        )
+        from common.ros import call_service_async
+        """,
+            "org/repo",
+        )
+        assert "robot_gateway/common/exceptions.py" in paths
+        assert "robot_gateway/common/ros.py" in paths
+
+    def test_import_custom_pattern_2(self) -> None:
+        resolver = PythonResolver()
+        paths = resolver.guess_paths(
+            "robot_gateway/http_bridge/routers/routers.py",
+            """from .robot import navigation, status, map, slam
+        """,
+            "org/repo",
+        )
+        assert "robot_gateway/http_bridge/routers/robot/navigation.py" in paths
+        assert "robot_gateway/http_bridge/routers/robot/status.py" in paths
+        assert "robot_gateway/http_bridge/routers/robot/map.py" in paths
+        assert "robot_gateway/http_bridge/routers/robot/slam.py" in paths
 
 
 class TestGetResolver:
