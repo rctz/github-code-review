@@ -51,7 +51,7 @@ class TestGraphIntegration:
         assert "repo" in result["final_comment"]
         assert "#42" in result["final_comment"]
         assert len(result["file_reviews"]) == 2
-        mock_persona.assert_called_once_with("repo")
+        mock_persona.assert_called_once_with("repo", "owner", "")
         assert mock_review.call_count == 2
 
     @patch("nodes.review_node.run_review")
