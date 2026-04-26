@@ -168,6 +168,25 @@ class GitHubService:
         wait=wait_exponential(min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
+    def fetch_pr_metadata(self, repo_name: str, owner: str, pr_id: int) -> tuple[str, str, str]:
+        """Fetch the HEAD SHA, title, and body of a pull request in one call.
+
+        Returns:
+            (head_sha, title, body) — body may be empty string if the PR has no description.
+        """
+        repo = self._client.get_repo(f"{owner}/{repo_name}")
+        pull = repo.get_pull(pr_id)
+        sha = pull.head.sha
+        title = pull.title or ""
+        body = pull.body or ""
+        logger.info("Fetched PR metadata for %s/%s#%d (sha=%s)", owner, repo_name, pr_id, sha[:7])
+        return sha, title, body
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
     def fetch_pr_head_sha(self, repo_name: str, owner: str, pr_id: int) -> str:
         """Fetch the HEAD commit SHA of a pull request.
 

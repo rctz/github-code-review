@@ -14,6 +14,8 @@ def review_node(state: SingleFileState) -> dict:
             diff=state.diff,
             system_prompt=state.system_prompt,
             dependency_context=state.dependency_context,
+            pr_title=state.pr_title,
+            pr_body=state.pr_body,
         )
         return {"file_reviews": [result.model_dump_json()]}
     except Exception as exc:

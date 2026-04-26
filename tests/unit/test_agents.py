@@ -10,26 +10,55 @@ from agents.review import FileReviewOutput, ReviewItem, _parse_response, run_rev
 
 
 class TestPersonaAgent:
+    @patch("agents.persona.GitHubService")
     @patch("agents.persona.LLMFactory")
-    def test_run_persona_returns_string(self, mock_factory: MagicMock) -> None:
+    def test_run_persona_returns_string(self, mock_factory: MagicMock, mock_github_cls: MagicMock) -> None:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "You are a reviewer for Python projects."
         mock_factory.create.return_value = mock_llm
+        mock_github_cls.return_value.fetch_file_content.return_value = "# My Project\nA FastAPI app."
 
-        result = run_persona("owner/repo")
+        result = run_persona("my-repo", "my-org", "gh_token")
         assert isinstance(result, str)
         assert len(result) > 0
         mock_factory.create.assert_called_once()
 
+    @patch("agents.persona.GitHubService")
     @patch("agents.persona.LLMFactory")
-    def test_run_persona_uses_repo_name(self, mock_factory: MagicMock) -> None:
+    def test_run_persona_uses_repo_name(self, mock_factory: MagicMock, mock_github_cls: MagicMock) -> None:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "System prompt"
         mock_factory.create.return_value = mock_llm
+        mock_github_cls.return_value.fetch_file_content.return_value = "# My Repo"
 
-        run_persona("my-org/my-repo")
+        run_persona("my-repo", "my-org", "gh_token")
         call_args = mock_llm.chat.call_args[0][0]
-        assert "my-org/my-repo" in call_args
+        assert "my-repo" in call_args
+
+    @patch("agents.persona.GitHubService")
+    @patch("agents.persona.LLMFactory")
+    def test_run_persona_includes_project_context_in_prompt(self, mock_factory: MagicMock, mock_github_cls: MagicMock) -> None:
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = "ROS2-focused reviewer"
+        mock_factory.create.return_value = mock_llm
+        mock_github_cls.return_value.fetch_file_content.return_value = "# ROS2 Navigation Stack\nUses rclpy and nav2."
+
+        run_persona("nav_stack", "robotics-org", "gh_token")
+        call_args = mock_llm.chat.call_args[0][0]
+        assert "ROS2 Navigation Stack" in call_args
+
+    @patch("agents.persona.GitHubService")
+    @patch("agents.persona.LLMFactory")
+    def test_run_persona_fallback_when_no_context(self, mock_factory: MagicMock, mock_github_cls: MagicMock) -> None:
+        mock_llm = MagicMock()
+        mock_llm.chat.return_value = "Generic reviewer"
+        mock_factory.create.return_value = mock_llm
+        mock_github_cls.return_value.fetch_file_content.return_value = "[Error fetching README.md: HTTP 404]"
+
+        result = run_persona("my-repo", "my-org", "gh_token")
+        assert isinstance(result, str)
+        call_args = mock_llm.chat.call_args[0][0]
+        assert "No README" in call_args
 
 
 class TestDependencyAgent:

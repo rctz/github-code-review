@@ -15,8 +15,11 @@ class PRReviewState(BaseModel):
     pr_files: list[dict]
     github_token: str = ""
     head_sha: str = ""
+    pr_title: str = ""
+    pr_body: str = ""
     system_prompt: str = ""
     file_reviews: Annotated[list[str], operator.add] = []
+    synthesis_reviews: list[str] = []
     final_comment: str = ""
     error: str = ""
 
@@ -31,6 +34,8 @@ class SingleFileState(BaseModel):
     repo_name: str
     head_sha: str = ""
     github_token: str = ""
+    pr_title: str = ""
+    pr_body: str = ""
     filename: str
     diff: str = ""
     system_prompt: str = ""

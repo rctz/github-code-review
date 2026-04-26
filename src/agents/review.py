@@ -72,6 +72,8 @@ def run_review(
     diff: str,
     system_prompt: str,
     dependency_context: str,
+    pr_title: str = "",
+    pr_body: str = "",
 ) -> FileReviewOutput:
     """Review a single file diff and return structured review items."""
     llm = LLMFactory.create(model=LiteLLMModel.GPT_5_4, temperature=1.0)
@@ -80,6 +82,8 @@ def run_review(
         filename=filename,
         dependency_context=dependency_context,
         diff=diff,
+        pr_title=pr_title or "(no title)",
+        pr_body=pr_body or "(no description)",
     )
 
     response = llm.chat(message=user_prompt, system_message=system_prompt)
