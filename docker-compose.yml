@@ -1,0 +1,26 @@
+services:
+  webhook:
+    build: .
+    ports:
+      - "${WEBHOOK_PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      - ${GITHUB_APP_PRIVATE_KEY}:/app/private-key.pem:ro
+    environment:
+      - GITHUB_APP_PRIVATE_KEY=/app/private-key.pem
+      - WEBHOOK_HOST=0.0.0.0
+      - WEBHOOK_PORT=8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M

@@ -1,134 +1,148 @@
-# Project Overview: LangGraph PR Review Bot
+# LangGraph PR Review Bot
 
-## 1. Description
-This project is an AI-powered GitHub Pull Request Review Bot built with **LangGraph** and **Python**. It receives GitHub Webhooks containing PR diffs, processes multiple files in parallel using a Map-Reduce (Fan-out/Fan-in) architecture, and posts a consolidated review comment back to GitHub.
+AI-powered GitHub PR reviewer using LangGraph Map-Reduce (fan-out/fan-in). Receives webhook payloads, reviews files in parallel, posts inline diff comments.
 
-Designed as an **organizational template** — teams can compose their own graphs by wiring together agents and nodes from the shared library.
+## Tech Stack
+- **Python 3.12/3.13**, LangGraph, LangChain (`langchain-litellm`, `langchain-core`)
+- **LLM:** LiteLLM proxy via `LLMFactory` (provider-agnostic)
+- **State/Config:** Pydantic v2, `pydantic-settings` (loads `.env`)
+- **Resilience:** `tenacity` (3 attempts, exponential backoff)
+- **Package manager:** `uv` | **Linting:** Ruff
 
-## 2. Tech Stack & Environment
-- **Core Framework:** LangGraph, LangChain (`langchain-litellm`, `langchain-core`)
-- **LLM Provider:** LiteLLM proxy (`LITELLM_API_BASE` + `LITELLM_API_KEY` env vars)
-- **Package Manager:** `uv`
-- **Python Version:** **Strictly 3.12 or 3.13** (Avoid Python 3.14+ due to Pydantic V1 compatibility issues with `langchain_core`).
+## Architecture Layers
 
-## 3. Architecture: Two-Layer Design
-
-The codebase enforces a strict separation between **business logic** and **orchestration**:
-
-| Layer | Directory | Responsibility |
+| Layer | Path | Role |
 |---|---|---|
-| **Agents** | `agents/` | Pure LLM logic — no LangGraph awareness |
-| **Nodes** | `nodes/` | Thin wrappers that translate LangGraph state ↔ agent calls |
-| **Graph** | `graph.py` | Orchestration only — subgraphs, edges, fan-out/fan-in |
-| **State** | `state.py` | TypedDict definitions |
-| **Tools** | `tools/` | External API integrations (GitHub, etc.) |
-| **Providers** | `providers/` | LLM client wrappers |
+| Config | `src/config/` | `pydantic-settings` — never call `os.getenv()` directly |
+| Prompts | `src/prompts/` | All prompt templates — edit without touching code |
+| State | `src/state/models.py` | `PRReviewState`, `SingleFileState`, `SingleFileOutput` |
+| Providers | `src/providers/` | `LLMFactory.create(model, temperature)` → `LLMProvider` |
+| Agents | `src/agents/` | Pure LLM logic — plain args in/out, no LangGraph |
+| Nodes | `src/nodes/` | LangGraph state ↔ agent bridge — return `dict` |
+| Graph | `src/graph/builder.py` | Orchestration, `Send` fan-out, all edges |
+| Services | `src/services/` | `GitHubService`, `GitHubAppService`, dependency resolvers |
 
-### Why two layers?
-- **Agents are testable in isolation** — pass plain args, no need to mock LangGraph state.
-- **Nodes are swappable** — change graph structure without touching agent logic.
-- **A node can call multiple agents** — sequential or parallel (`asyncio.gather`).
-- **Agents are reusable** — callable from any node or outside the graph entirely.
+## Graph Workflow (in order)
 
-## 4. Directory Structure
-```text
-├── pyproject.toml              # uv dependency management
-├── main.py                     # Entry point / test runner
-├── graph.py                    # LangGraph workflow (StateGraph, subgraphs, edges)
-├── state.py                    # TypedDict state definitions
-│
-├── agents/                     # Pure business logic — no LangGraph state
-│   ├── __init__.py
-│   ├── persona.py              # run_persona(repo_name) -> str
-│   ├── dependency.py           # run_dependency(diff) -> str
-│   └── review.py               # run_review(...) -> FileReviewOutput
-│                               # Also contains: ReviewItem, FileReviewOutput (Pydantic)
-│
-├── nodes/                      # LangGraph wrappers — thin, state-aware
-│   ├── __init__.py
-│   ├── persona_node.py         # persona_node(state: PRReviewState) -> dict
-│   ├── dependency_node.py      # dependency_node(state: SingleFileState) -> dict
-│   ├── review_node.py          # review_node(state: SingleFileState) -> dict
-│   └── aggregate_node.py       # aggregate_node(state: PRReviewState) -> dict
-│
-├── tools/                      # External integrations
-│   ├── __init__.py
-│   └── github.py               # fetch_file_content(), post_pr_comment()
-│
-└── providers/                  # LLM provider wrappers
-    ├── __init__.py
-    ├── litellm.py              # LiteLLM (primary)
-    ├── models.py               # LiteLLMModel enum
-    ├── azure.py
-    └── openrouter.py
+```
+START
+  → persona_node          # run_persona(repo_name) → system_prompt
+  → fetch_sha_node        # fetch PR HEAD SHA → head_sha
+  → fetch_tree_node       # GitHub Trees API → repo_tree (fetched once, shared to all parallel branches)
+  → [_map_files_to_review]  # fan-out: Send per file (skips doc files + trivial diffs)
+      → review_single_file [subgraph per file, parallel]:
+          → context_node  # LLM picks relevant files from repo_tree, fetches content → dependency_context
+          → review_node   # run_review() → appends JSON to file_reviews
+  → synthesis_node        # cross-file analysis using all file_reviews → synthesis_reviews
+  → aggregate_node        # joins file_reviews + synthesis_reviews → final_comment
+  → post_review_node      # posts inline diff comments to GitHub
+END
 ```
 
-## 5. LangGraph Architecture (Map-Reduce / Parallel Execution)
-
-### 5.1 State Definitions (`state.py`)
+### State Models (`src/state/models.py`)
 ```python
-import operator
-from typing import Annotated, TypedDict
+class PRReviewState:
+    pr_id, owner, repo_name, pr_files, github_token, head_sha
+    pr_title, pr_body           # passed into synthesis
+    system_prompt, repo_tree    # fetched once; repo_tree shared to all SingleFileStates
+    file_reviews: Annotated[list[str], operator.add]  # reducer: parallel branches append
+    synthesis_reviews: list[str]
+    final_comment, error
 
-class PRReviewState(TypedDict):
-    pr_id: str
-    repo_name: str
-    pr_files: list[dict]  # [{"filename": "...", "diff": "..."}]
-    system_prompt: str
-    file_reviews: Annotated[list[str], operator.add]  # reducer: appends
-    final_comment: str
-
-class SingleFileState(TypedDict):
-    pr_id: str
-    repo_name: str
-    filename: str
-    diff: str
-    system_prompt: str
-    dependency_context: str
-    file_reviews: Annotated[list[str], operator.add]
-
-class SingleFileOutput(TypedDict):
+class SingleFileState:
+    pr_id, owner, repo_name, head_sha, github_token
+    pr_title, pr_body, filename, diff, system_prompt
+    repo_tree                   # subset passed from PRReviewState
+    dependency_context          # filled by context_node
     file_reviews: Annotated[list[str], operator.add]
 ```
 
-### 5.2 Workflow Steps
-1. **`persona_node`** — calls `run_persona(repo_name)` → writes `system_prompt` to state.
-2. **`_map_files_to_review`** (conditional edge) — fans out one `Send("review_single_file", ...)` per file.
-3. **`review_single_file`** (subgraph, runs in parallel per file):
-   - `dependency_node` → calls `run_dependency(diff)` → writes `dependency_context`
-   - `review_node` → calls `run_review(...)` → appends JSON to `file_reviews`
-4. **`aggregate_node`** — joins all `file_reviews` into `final_comment`.
+## Context Selection (replaces old dependency resolver)
 
-### 5.3 Review Output Format
-Each file review is a JSON string matching `FileReviewOutput`:
+`fetch_tree_node` fetches the full repo file tree once via GitHub Trees API. Each `context_node` runs `run_context_selector()` — a lightweight LLM call that picks up to 8 relevant files from the tree for that specific diff. Content is fetched and formatted as `dependency_context`.
+
+## Synthesis Node
+
+After all per-file reviews fan-in, `synthesis_node` calls `run_synthesis()` to find cross-file issues invisible to per-file reviewers (e.g., interface mismatches, state mutation patterns across modules). Outputs `SynthesisOutput` with `SynthesisIssue[]`.
+
+## Dependency Resolver System (`src/services/dependency/`)
+
+Plugin-based strategy pattern — context-aware for different repo types.
+
+```
+dependency/
+  base.py          # DependencyResolver ABC, _STDLIB_MODULES
+  registry.py      # RESOLVER_REGISTRY, RepoContext, analyze_repository(),
+                   # create_python_resolver(), get_context_aware_registry(), get_resolver()
+  resolvers/
+    cpp.py         # CppResolver — parses #include lines
+    python.py      # PythonResolver(plugins, attr_plugins) — extensible via plugins
+  plugins/
+    ros2.py        # Ros2InterfacePlugin, Ros2AmentWorkspacePlugin, Ros2AttrPlugin
+```
+
+**Context-aware usage:** `get_context_aware_registry(repo_root)` inspects the repo (e.g., detects `package.xml` for ROS2) and builds the appropriate resolver with correct plugins. Use this when repo root is available. Use static `RESOLVER_REGISTRY` / `get_resolver(filename)` as fallback.
+
+**Adding a new resolver:** implement `DependencyResolver.guess_paths()` → register in `RESOLVER_REGISTRY` (no other changes needed).
+**Adding a Python plugin:** implement `PythonImportPlugin` or `PythonAttrPlugin` → pass to `PythonResolver(plugins=[...])`.
+
+## GitHub Services (`src/services/`)
+
+| Service | File | Auth |
+|---|---|---|
+| `GitHubService` | `github.py` | PAT token |
+| `GitHubAppService` | `github_app.py` | GitHub App JWT + installation token |
+
+Key `GitHubService` methods: `fetch_diff`, `fetch_file_content`, `fetch_repo_tree`, `fetch_pr_head_sha`, `create_inline_comment`, `create_pr_review`, `post_pr_comment`
+
+`find_line_in_file(file_content, code_snippet) → (start, end) | None` — matches snippets to 1-based line numbers in real file content (never parse diff for line numbers).
+
+## Inline Comment Flow
+
+`post_review_node` for each `ReviewItem`: fetch file at `head_sha` → `find_line_in_file()` → `create_inline_comment(side=RIGHT, line=...)` → fallback to `post_pr_comment` if line not found.
+
+## Review Output Format (`FileReviewOutput`)
 ```json
 {
   "filename": "src/auth.py",
-  "reviews": [
-    {
-      "title": "SQL injection via string interpolation",
-      "detail": "The query uses f-string interpolation with user input...",
-      "suggestion_for_change": "Use parameterized queries: db.execute('SELECT * FROM users WHERE name=?', [username])",
-      "critical_rate": "High"
-    }
-  ]
+  "reviews": [{
+    "title": "...", "detail": "...",
+    "existing_code_to_replace": "exact 1-3 lines from diff",
+    "suggestion_for_change": "...",
+    "exact_code_replacement": "...",
+    "critical_rate": "High"
+  }]
 }
 ```
 
-## 6. Key Implementation Rules
+## Key Implementation Rules
 
-- **Agent signature:** Agents accept plain Python args and return plain values or Pydantic models — never TypedDict or LangGraph state.
-- **Node signature:** Nodes accept a TypedDict state and return `dict` — never call LLM directly.
-- **Parallel processing:** Never loop through files inside a node. Always use the `Send` API via a conditional edge to fan-out.
-- **State reducers:** Use `Annotated[list[str], operator.add]` for keys that aggregate across parallel branches (e.g. `file_reviews`).
-- **Message handling:** Always wrap messages in a list when calling `llm.invoke([...])`.
-- **LLM provider:** Use `LiteLLM` from `providers/litellm.py`. Configure via `LITELLM_API_BASE` and `LITELLM_API_KEY` env vars.
+- **Agents:** plain args in, plain values/Pydantic out — never accept state objects
+- **Nodes:** accept Pydantic state, return `dict` — never call LLM directly
+- **Fan-out:** use `Send` API via conditional edge — never loop files inside a node
+- **State reducers:** `Annotated[list[str], operator.add]` for keys aggregated across parallel branches
+- **Providers:** `LLMFactory.create(model, temperature)` only — never instantiate providers directly
+- **Config:** `from config.settings import settings` — never `os.getenv()` or `load_dotenv()` directly
+- **GitHub API:** `GitHubService` / `GitHubAppService` only — never call PyGithub/requests outside `services/`
+- **Retries:** `tenacity` in providers/services only — no graph-level retries
+- **Inline comments:** `find_line_in_file` + `create_inline_comment` — never parse diff for line numbers
 
-## 7. Extending the Template
+## Adding Components
 
-To add a new agent/node pair:
-1. Create `agents/<name>.py` with a `run_<name>(plain_args...) -> OutputType` function.
-2. Create `nodes/<name>_node.py` with a `<name>_node(state: SomeState) -> dict` wrapper.
-3. Register the node in `graph.py` and wire edges.
+**Agent/Node pair:** `src/agents/<name>.py` (plain fn) → `src/prompts/<name>.py` → `src/nodes/<name>_node.py` → wire in `src/graph/builder.py`
 
-A node can call multiple agents — sequentially or in parallel with `asyncio.gather`.
+**LLM Provider:** implement `LLMProvider` in `src/providers/<name>.py` → add routing in `factory.py` + enum in `models.py`
+
+**Dependency Resolver:** implement `DependencyResolver` → register in `RESOLVER_REGISTRY`
+
+**Python Resolver Plugin:** implement `PythonImportPlugin` or `PythonAttrPlugin` → pass to `create_python_resolver()` or `PythonResolver(plugins=...)`
+
+## Commands
+```bash
+uv sync                          # install deps
+uv run python -m main            # run with default tests/mock_input.json
+uv run python -m main <file>     # run with custom payload
+uv run pytest                    # all tests
+uv run ruff check src/ tests/    # lint
+uv run ruff format src/ tests/   # format
+```
