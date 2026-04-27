@@ -280,6 +280,41 @@ class GitHubService:
         wait=wait_exponential(min=1, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
+    def fetch_repo_tree(self, repo_name: str, tree_sha: str) -> list[str]:
+        """Fetch all file paths in the repo at tree_sha via the GitHub Trees API.
+
+        Uses ``GET /repos/{owner}/{repo}/git/trees/{tree_sha}?recursive=1``.
+        Returns a flat list of blob paths (directories excluded).
+        Returns an empty list on error. Logs a warning when GitHub truncates
+        the response (very large repos).
+        """
+        url = f"{_GITHUB_API}/repos/{repo_name}/git/trees/{tree_sha}"
+        resp = requests.get(
+            url, headers=self._headers(), params={"recursive": "1"}, timeout=15
+        )
+        if resp.status_code != 200:
+            logger.warning(
+                "fetch_repo_tree failed for %s@%s: HTTP %d",
+                repo_name,
+                tree_sha[:7],
+                resp.status_code,
+            )
+            return []
+        data = resp.json()
+        if data.get("truncated"):
+            logger.warning(
+                "repo tree truncated for %s — large repo, context may be incomplete",
+                repo_name,
+            )
+        paths = [item["path"] for item in data.get("tree", []) if item.get("type") == "blob"]
+        logger.info("fetch_repo_tree: %d files for %s@%s", len(paths), repo_name, tree_sha[:7])
+        return paths
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
     def post_pr_comment(self, repo_name: str, pr_number: int, body: str) -> bool:
         """Post a general comment on a GitHub PR (fallback for inline failures).
 

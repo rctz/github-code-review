@@ -6,8 +6,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
 from nodes.aggregate_node import aggregate_node
-from nodes.dependency_node import dependency_node
+from nodes.context_node import context_node
 from nodes.fetch_sha_node import fetch_sha_node
+from nodes.fetch_tree_node import fetch_tree_node
 from nodes.persona_node import persona_node
 from nodes.post_review_node import post_review_node
 from nodes.review_node import review_node
@@ -37,12 +38,12 @@ def _is_reviewable(filename: str, diff: str) -> bool:
 
 
 def _build_file_review_subgraph() -> CompiledStateGraph:
-    """Compile a subgraph that runs dependency analysis -> review for ONE file."""
+    """Compile a subgraph that runs context selection -> review for ONE file."""
     sub = StateGraph(SingleFileState, output_schema=SingleFileOutput)
-    sub.add_node("dependency_node", dependency_node)
+    sub.add_node("context_node", context_node)
     sub.add_node("review_node", review_node)
-    sub.add_edge(START, "dependency_node")
-    sub.add_edge("dependency_node", "review_node")
+    sub.add_edge(START, "context_node")
+    sub.add_edge("context_node", "review_node")
     sub.add_edge("review_node", END)
     return sub.compile()
 
@@ -77,6 +78,7 @@ def _map_files_to_review(state: PRReviewState) -> list[Send]:
                     filename=filename,
                     diff=diff,
                     system_prompt=state.system_prompt,
+                    repo_tree=state.repo_tree,
                 ),
             )
         )
@@ -90,6 +92,7 @@ def build_graph() -> StateGraph:
 
     graph.add_node("persona_node", persona_node)
     graph.add_node("fetch_sha_node", fetch_sha_node)
+    graph.add_node("fetch_tree_node", fetch_tree_node)
     graph.add_node("review_single_file", _build_file_review_subgraph())
     graph.add_node("synthesis_node", synthesis_node)
     graph.add_node("aggregate_node", aggregate_node)
@@ -97,7 +100,8 @@ def build_graph() -> StateGraph:
 
     graph.add_edge(START, "persona_node")
     graph.add_edge("persona_node", "fetch_sha_node")
-    graph.add_conditional_edges("fetch_sha_node", _map_files_to_review, ["review_single_file"])
+    graph.add_edge("fetch_sha_node", "fetch_tree_node")
+    graph.add_conditional_edges("fetch_tree_node", _map_files_to_review, ["review_single_file"])
     graph.add_edge("review_single_file", "synthesis_node")
     graph.add_edge("synthesis_node", "aggregate_node")
     graph.add_edge("aggregate_node", "post_review_node")

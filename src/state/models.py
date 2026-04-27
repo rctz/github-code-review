@@ -18,6 +18,7 @@ class PRReviewState(BaseModel):
     pr_title: str = ""
     pr_body: str = ""
     system_prompt: str = ""
+    repo_tree: list[str] = []
     file_reviews: Annotated[list[str], operator.add] = []
     synthesis_reviews: list[str] = []
     final_comment: str = ""
@@ -39,6 +40,7 @@ class SingleFileState(BaseModel):
     filename: str
     diff: str = ""
     system_prompt: str = ""
+    repo_tree: list[str] = []
     dependency_context: str = ""
     file_reviews: Annotated[list[str], operator.add] = []
 
