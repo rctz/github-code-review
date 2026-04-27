@@ -3,7 +3,7 @@
 from pathlib import PurePosixPath
 
 from services.dependency.base import _STDLIB_MODULES
-from services.dependency.resolvers.python import PythonImportPlugin
+from services.dependency.resolvers.python import PythonAttrPlugin, PythonImportPlugin
 
 _ROS2_INTERFACE_TYPES: frozenset[str] = frozenset({"srv", "msg", "action"})
 
@@ -80,3 +80,16 @@ class Ros2AmentWorkspacePlugin(PythonImportPlugin):
             return [f"{prefix}/{pkg_root}/{rest}.py"]
 
         return [f"{pkg_root}/{pkg_root}/{rest}.py"]
+
+
+class Ros2AttrPlugin(PythonAttrPlugin):
+    """Resolve attribute-access chains to ROS 2 sibling directories (ros/, services/, clients/)."""
+
+    _SUBDIRS: tuple[str, ...] = ("ros", "services", "clients")
+
+    def resolve_attr(self, attr_name: str, file_dir: PurePosixPath) -> list[str] | None:
+        candidates: list[str] = []
+        for subdir in self._SUBDIRS:
+            candidates.append(str(file_dir.parent / subdir / attr_name) + ".py")
+            candidates.append(str(file_dir / subdir / attr_name) + ".py")
+        return candidates

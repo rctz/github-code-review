@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from services.dependency.base import DependencyResolver
-from services.dependency.plugins.ros2 import Ros2AmentWorkspacePlugin, Ros2InterfacePlugin
+from services.dependency.plugins.ros2 import Ros2AmentWorkspacePlugin, Ros2AttrPlugin, Ros2InterfacePlugin
 from services.dependency.resolvers.cpp import CppResolver
-from services.dependency.resolvers.python import PythonImportPlugin, PythonResolver
+from services.dependency.resolvers.python import PythonAttrPlugin, PythonImportPlugin, PythonResolver
 
 
 @dataclass
@@ -28,7 +28,8 @@ def create_python_resolver(context: RepoContext) -> PythonResolver:
     plugins: list[PythonImportPlugin] = (
         [Ros2InterfacePlugin(), Ros2AmentWorkspacePlugin()] if context.is_ros2 else []
     )
-    return PythonResolver(plugins=plugins)
+    attr_plugins: list[PythonAttrPlugin] = [Ros2AttrPlugin()] if context.is_ros2 else []
+    return PythonResolver(plugins=plugins, attr_plugins=attr_plugins)
 
 
 def get_context_aware_registry(repo_root: str) -> dict[str, DependencyResolver]:

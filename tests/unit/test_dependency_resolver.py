@@ -3,6 +3,7 @@ from services.dependency import (
     CppResolver,
     PythonResolver,
     Ros2AmentWorkspacePlugin,
+    Ros2AttrPlugin,
     Ros2InterfacePlugin,
     get_resolver,
 )
@@ -152,6 +153,51 @@ class TestPythonResolver:
         assert "robot_gateway/http_bridge/routers/robot/status.py" in paths
         assert "robot_gateway/http_bridge/routers/robot/map.py" in paths
         assert "robot_gateway/http_bridge/routers/robot/slam.py" in paths
+
+
+class TestPythonAttrChain:
+    def test_generic_attr_chain_same_dir(self) -> None:
+        resolver = PythonResolver()
+        diff = "+        response = await self.node.mission.pause_stop_mission(request)"
+        paths = resolver.guess_paths("robot_gateway/http_bridge/adapters/mission_adapter.py", diff, "repo")
+        assert "robot_gateway/http_bridge/adapters/mission.py" in paths
+
+    def test_generic_attr_chain_parent_dir(self) -> None:
+        resolver = PythonResolver()
+        diff = "+        response = await self.node.mission.pause_stop_mission(request)"
+        paths = resolver.guess_paths("robot_gateway/http_bridge/adapters/mission_adapter.py", diff, "repo")
+        assert "robot_gateway/http_bridge/mission.py" in paths
+
+    def test_generic_attr_chain_ignores_removed_lines(self) -> None:
+        resolver = PythonResolver()
+        diff = "-        response = await self.node.mission.old_method(request)"
+        paths = resolver.guess_paths("src/adapters/adapter.py", diff, "repo")
+        assert paths == []
+
+    def test_generic_attr_chain_no_match_for_single_level(self) -> None:
+        resolver = PythonResolver()
+        diff = "+        response = await self.mission.pause(request)"
+        paths = resolver.guess_paths("src/adapters/adapter.py", diff, "repo")
+        assert paths == []
+
+    def test_ros2_attr_plugin_adds_ros_subdir(self) -> None:
+        resolver = PythonResolver(attr_plugins=[Ros2AttrPlugin()])
+        diff = "+        response = await self.node.mission.pause_stop_mission(request)"
+        paths = resolver.guess_paths("robot_gateway/http_bridge/adapters/mission_adapter.py", diff, "repo")
+        assert "robot_gateway/http_bridge/ros/mission.py" in paths
+
+    def test_ros2_attr_plugin_adds_services_and_clients_subdir(self) -> None:
+        resolver = PythonResolver(attr_plugins=[Ros2AttrPlugin()])
+        diff = "+        result = await self.node.command.execute(request)"
+        paths = resolver.guess_paths("robot_gateway/http_bridge/adapters/cmd_adapter.py", diff, "repo")
+        assert "robot_gateway/http_bridge/services/command.py" in paths
+        assert "robot_gateway/http_bridge/clients/command.py" in paths
+
+    def test_ros2_attr_plugin_not_active_without_plugin(self) -> None:
+        resolver = PythonResolver()
+        diff = "+        response = await self.node.mission.pause_stop_mission(request)"
+        paths = resolver.guess_paths("robot_gateway/http_bridge/adapters/mission_adapter.py", diff, "repo")
+        assert "robot_gateway/http_bridge/ros/mission.py" not in paths
 
 
 class TestGetResolver:

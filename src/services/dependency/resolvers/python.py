@@ -8,6 +8,9 @@ from services.dependency.base import _STDLIB_MODULES, DependencyResolver
 
 _RE_FROM_MODULE = re.compile(r"^\+?\s*from\s+(\.+[\w.]*|[\w.]+)\s+import\s+\(?([^)]*)\)?")
 _RE_DIRECT_IMPORT = re.compile(r"^\+?\s*import\s+([\w.]+)")
+# Matches self.X.Y.method() chains — captures Y (e.g., "mission" from self.node.mission.pause())
+# This finds runtime dependencies that are accessed via attributes, not imports.
+_RE_ATTR_CHAIN = re.compile(r"\bself\.(?:\w+\.)+(\w+)\.\w+\(")
 
 
 def _collapse_multiline_imports(content: str) -> list[str]:
@@ -49,11 +52,24 @@ class PythonImportPlugin(ABC):
         """Return candidate paths for this import, or None to defer to the next plugin."""
 
 
+class PythonAttrPlugin(ABC):
+    """Plugin interface for resolving attribute-access chains (e.g. self.node.mission.method())."""
+
+    @abstractmethod
+    def resolve_attr(self, attr_name: str, file_dir: PurePosixPath) -> list[str] | None:
+        """Return additional candidate paths for this attribute, or None to skip."""
+
+
 class PythonResolver(DependencyResolver):
     """Resolve Python import dependencies, with optional plugin extensions."""
 
-    def __init__(self, plugins: list[PythonImportPlugin] | None = None) -> None:
+    def __init__(
+        self,
+        plugins: list[PythonImportPlugin] | None = None,
+        attr_plugins: list[PythonAttrPlugin] | None = None,
+    ) -> None:
         self._plugins = plugins or []
+        self._attr_plugins = attr_plugins or []
 
     def guess_paths(self, filename: str, content: str, repo_name: str) -> list[str]:
         file_dir = PurePosixPath(filename).parent
@@ -114,5 +130,20 @@ class PythonResolver(DependencyResolver):
                 for i in range(len(parts)):
                     ancestor = str(PurePosixPath(*parts[: len(parts) - i]))
                     _add(f"{ancestor}/{rel_path}.py")
+
+        # Scan added lines for attribute-access chains (e.g., self.node.mission.method())
+        # to surface class files not reachable via explicit imports.
+        for line in content.splitlines():
+            if not line.startswith("+"):
+                continue
+            for match in _RE_ATTR_CHAIN.finditer(line):
+                attr = match.group(1)
+                _add(f"{file_dir}/{attr}.py")
+                _add(f"{file_dir.parent}/{attr}.py")
+                for plugin in self._attr_plugins:
+                    result = plugin.resolve_attr(attr, file_dir)
+                    if result:
+                        for p in result:
+                            _add(p)
 
         return candidates
