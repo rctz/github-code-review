@@ -1,15 +1,32 @@
 # LangGraph PR Review Bot
 
-AI-powered GitHub Pull Request Review Bot built with **LangGraph** and **Python**. Processes multiple files in parallel using a Map-Reduce (Fan-out/Fan-in) architecture and posts consolidated review comments back to GitHub.
+AI-powered GitHub Pull Request reviewer built with **LangGraph** and **Python**. Reviews PR files in parallel using Map-Reduce (fan-out/fan-in), selects relevant context files via LLM, runs cross-file synthesis, and posts inline diff comments to GitHub.
+
+## How It Works
+
+```
+persona → fetch_sha → fetch_tree → [parallel per file: context → review] → synthesis → aggregate → post
+```
+
+- **`persona`** — generates a repo-specific reviewer persona
+- **`fetch_tree`** — fetches the full repo file tree once (GitHub Trees API)
+- **`context`** — LLM picks up to 8 relevant files from the tree per file diff
+- **`review`** — reviews each file with dependency context
+- **`synthesis`** — finds cross-file issues invisible to per-file reviewers
+- **`post`** — posts inline comments on exact diff lines
+
+---
 
 ## Requirements
 
 - Python 3.12 or 3.13
-- [uv](https://docs.astral.sh/uv/) package manager
-- LiteLLM proxy server (or compatible OpenAI-compatible API)
-- GitHub Personal Access Token
+- [`uv`](https://docs.astral.sh/uv/) package manager
+- LiteLLM proxy (or compatible OpenAI API)
+- GitHub Personal Access Token or GitHub App credentials
 
-## Quick Start
+---
+
+## Setup
 
 ### 1. Install dependencies
 
@@ -17,21 +34,13 @@ AI-powered GitHub Pull Request Review Bot built with **LangGraph** and **Python*
 uv sync
 ```
 
-For development (includes pytest, ruff):
-
-```bash
-uv sync --extra dev
-```
-
 ### 2. Configure environment
 
-Copy `.env.example` and fill in your credentials:
-
 ```bash
-cp .env.example .env
+cp .env.example .env   # then fill in your values
 ```
 
-Required variables in `.env`:
+**Required:**
 
 ```env
 LITELLM_API_KEY=your-litellm-api-key
@@ -39,69 +48,77 @@ LITELLM_API_BASE=http://your-litellm-proxy:4000/
 GITHUB_TOKEN=ghp_your_github_token
 ```
 
-Optional:
+**Optional:**
 
 ```env
-OPENROUTER_API_KEY=your-openrouter-key
-AZURE_API_KEY=your-azure-key
+# GitHub App (alternative to PAT)
+GITHUB_APP_ID=123456
+GITHUB_APP_PRIVATE_KEY=/path/to/private-key.pem   # or raw PEM content
+
+# Webhook server
+GITHUB_WEBHOOK_SECRET=your-webhook-secret
+WEBHOOK_HOST=0.0.0.0
+WEBHOOK_PORT=8000
+
+# LLM providers (if using OpenRouter or Azure instead of LiteLLM)
+OPENROUTER_API_KEY=your-key
+AZURE_API_KEY=your-key
+
+# Application
 LOG_LEVEL=INFO
+MAX_CONCURRENT_LLM_CALLS=5
+LLM_RATE_LIMIT=20
+LLM_RATE_PERIOD_SECONDS=60
 ```
 
-### 3. Run
+---
 
-With default mock input:
+## Running
+
+### CLI — mock payload (for development/testing)
+
+Runs against `tests/mock_input.json` and writes output to `tests/review_output.md`:
 
 ```bash
 uv run python src/main.py
 ```
 
-With a custom payload:
+With a custom payload file (GitHub webhook PR payload format):
 
 ```bash
 uv run python src/main.py path/to/payload.json
 ```
 
-Or via the installed entry point:
+### CLI — real PR
+
+```python
+# Use run_review_from_payload() directly in a script
+from main import run_review_from_payload
+
+result = run_review_from_payload(
+    repo_name="my-repo",
+    owner="my-org",
+    pr_number=42,
+    github_token="ghp_...",   # optional, falls back to GITHUB_TOKEN env var
+)
+print(result.final_comment)
+```
+
+### Webhook server (FastAPI)
+
+Receives GitHub PR webhook events and triggers reviews automatically:
 
 ```bash
-uv run pr-review
+uv run uvicorn entrypoints.webhook:app --host 0.0.0.0 --port 8000
 ```
 
-## Architecture
+Configure your GitHub repo webhook:
+- **Payload URL:** `http://your-server:8000/webhook`
+- **Content type:** `application/json`
+- **Events:** Pull requests (`opened`, `reopened`)
+- **Secret:** must match `GITHUB_WEBHOOK_SECRET` in `.env`
 
-```
-src/
-├── config/          pydantic-settings (.env loader)
-├── prompts/         Prompt templates (decoupled from logic)
-├── state/           Pydantic state models for LangGraph
-├── providers/       Abstract LLMProvider + factory + implementations
-├── agents/          Pure LLM logic (no LangGraph awareness)
-├── nodes/           Thin wrappers: LangGraph state ↔ agent calls
-├── graph/           Orchestration (subgraphs, edges, fan-out/fan-in)
-├── services/        External APIs (GitHub) + dependency resolver
-└── main.py          CLI entry point
-```
-
-**Workflow:**
-
-1. `persona_node` — generates a reviewer system prompt from the repo name
-2. `fetch_sha_node` — fetches the PR HEAD commit SHA
-3. Fan-out — one parallel subgraph per file (deduplicates by filename), passes `owner`, `head_sha`, `github_token` to each
-4. Each subgraph: `dependency_node` → `review_node`
-   - `dependency_node` resolves dependency file paths via a Strategy Pattern registry, fetches actual content from GitHub, and formats dependency context
-5. `aggregate_node` — merges all file reviews into a single markdown comment
-6. `post_review_node` — posts inline review comments pointing to exact diff lines
-
-## Dependency Resolution
-
-The bot uses a **Strategy Pattern registry** (`src/services/dependency_resolver.py`) to guess and fetch code dependencies before review:
-
-| Resolver | Extensions | Strategy |
-|---|---|---|
-| `CppResolver` | `.cpp`, `.cc`, `.cxx`, `.c`, `.hpp`, `.h` | Parses `#include` lines. Guesses same-dir headers, `include/` paths, and ROS2 `include/<pkg>/` patterns. |
-| `PythonResolver` | `.py` | Parses `from X import Y` / `import X.Y`. Converts dotted imports to file paths, filters stdlib modules. |
-
-The registry is extensible — add new resolvers without modifying agents, nodes, or graph structure.
+---
 
 ## Testing
 
@@ -117,88 +134,104 @@ uv run pytest
 uv run pytest -v
 ```
 
-### Run specific test suites
+### Run a specific suite
 
 ```bash
-# Unit tests only
 uv run pytest tests/unit/
-
-# Integration tests only
 uv run pytest tests/integration/
+```
 
-# Single test file
+### Run a single file or test
+
+```bash
 uv run pytest tests/unit/test_agents.py
-
-# Single test case
 uv run pytest tests/unit/test_agents.py::TestReviewAgent::test_parse_valid_json
 ```
 
 ### Run with coverage
 
 ```bash
-uv run pytest --tb=short -q
+uv run pytest --cov=src --cov-report=term-missing
 ```
 
-**Test structure:**
+**Test suites:**
 
-| Suite | File | What it covers |
+| Suite | File | Covers |
 |---|---|---|
-| Agents | `tests/unit/test_agents.py` | Persona, dependency (with resolver + mock GitHub), review logic |
-| Resolver | `tests/unit/test_dependency_resolver.py` | CppResolver, PythonResolver, registry lookup |
-| Nodes | `tests/unit/test_nodes.py` | LangGraph node wrappers + error handling |
-| Providers | `tests/unit/test_providers.py` | Factory pattern, model enum, ABC |
-| Services | `tests/unit/test_services_github.py` | GitHub API (fetch diff, post comment) |
-| Graph | `tests/integration/test_graph.py` | Full graph execution, fan-out, error recovery |
+| Agents | `test_agents.py` | persona, dependency, review agent logic |
+| Resolvers | `test_dependency_resolver.py` | CppResolver, PythonResolver, plugins, registry |
+| Nodes | `test_nodes.py` | node wrappers + error handling |
+| Providers | `test_providers.py` | factory, model enum, LLMProvider ABC |
+| GitHub | `test_services_github.py` | fetch diff, post comment, inline comments |
+| Webhook | `test_webhook.py` | FastAPI handler, signature verification |
+| Graph | `tests/integration/test_graph.py` | full graph execution, fan-out, fan-in |
+
+---
 
 ## Linting & Formatting
 
 ```bash
-# Check lint
-uv run ruff check src/ tests/
-
-# Auto-fix lint issues
-uv run ruff check --fix src/ tests/
-
-# Check formatting
-uv run ruff format --check src/ tests/
-
-# Auto-format
-uv run ruff format src/ tests/
+uv run ruff check src/ tests/          # lint
+uv run ruff check --fix src/ tests/    # auto-fix
+uv run ruff format src/ tests/         # format
+uv run ruff format --check src/ tests/ # check only
 ```
 
-## Adding New Components
+---
 
-### New Agent/Node Pair
+## Development
 
-1. `src/agents/<name>.py` — `run_<name>(plain_args...) -> OutputType`
+### Adding a new agent/node pair
+
+1. `src/agents/<name>.py` — `run_<name>(plain_args) -> OutputType` (no LangGraph)
 2. `src/prompts/<name>.py` — prompt templates
 3. `src/nodes/<name>_node.py` — `<name>_node(state) -> dict`
 4. Register in `src/graph/builder.py` and wire edges
 
-### New LLM Provider
+### Adding a dependency resolver
 
-1. `src/providers/<name>.py` — implement `LLMProvider` ABC
+1. Implement `DependencyResolver.guess_paths()` in `src/services/dependency/resolvers/`
+2. Register in `RESOLVER_REGISTRY` in `src/services/dependency/registry.py`
+
+### Adding a Python resolver plugin
+
+Implement `PythonImportPlugin` or `PythonAttrPlugin` in `src/services/dependency/plugins/`, then pass to `create_python_resolver()` or `PythonResolver(plugins=[...])`.
+
+### Adding an LLM provider
+
+1. Implement `LLMProvider` in `src/providers/<name>.py`
 2. Add routing in `src/providers/factory.py`
-3. Add model enum in `src/providers/models.py`
+3. Add model constants in `src/providers/models.py`
 
-### New Dependency Resolver
+### Mock input format
 
-1. `src/services/dependency_resolver.py` — implement `DependencyResolver` ABC
-2. Register in `RESOLVER_REGISTRY` with target file extension(s)
-3. No changes needed to agents, nodes, or graph — the registry handles routing automatically
+`tests/mock_input.json` is a standard GitHub Pull Request webhook payload. Replace it with any real PR webhook payload to test against a different repo.
 
-### FastAPI Webhook (Future)
+---
 
-1. Create `entrypoints/webhook.py`
-2. Import `build_compiled_graph()` and `PRReviewState`
+## Project Structure
 
-## Configuration Reference
+```
+src/
+├── config/settings.py       pydantic-settings (.env loader)
+├── prompts/                 All prompt templates
+├── state/models.py          PRReviewState, SingleFileState
+├── providers/               LLMProvider ABC + factory + LiteLLM/OpenRouter/Azure
+├── agents/                  Pure LLM logic (persona, context_selector, review, synthesis)
+├── nodes/                   LangGraph wrappers (fetch_sha, fetch_tree, context, review, synthesis, aggregate, post)
+├── graph/builder.py         Full graph wiring
+├── services/
+│   ├── github.py            GitHubService (PAT auth)
+│   ├── github_app.py        GitHub App JWT auth
+│   └── dependency/          Plugin-based resolver registry (Python + C/C++ + ROS2)
+└── main.py                  CLI entry point + run_review_from_payload()
 
-| Variable | Required | Description |
-|---|---|---|
-| `LITELLM_API_KEY` | Yes | API key for LiteLLM proxy |
-| `LITELLM_API_BASE` | Yes | LiteLLM proxy base URL |
-| `GITHUB_TOKEN` | Yes | GitHub PAT with repo access |
-| `OPENROUTER_API_KEY` | No | OpenRouter API key |
-| `AZURE_API_KEY` | No | Azure AI API key |
-| `LOG_LEVEL` | No | Python log level (default: `INFO`) |
+entrypoints/
+└── webhook.py               FastAPI webhook handler
+
+tests/
+├── mock_input.json          Sample GitHub webhook payload
+├── review_output.md         Output from last CLI run
+├── unit/                    Unit tests per module
+└── integration/             Full graph integration test
+```
