@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     webhook_host: str = "0.0.0.0"
     webhook_port: int = 8000
+    review_forks: bool = False
+    max_webhook_backlog: int = 8
 
     # Application
     log_level: str = "INFO"
