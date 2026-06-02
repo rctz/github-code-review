@@ -6,6 +6,7 @@ from pathlib import Path
 from config.settings import settings
 from graph.builder import build_compiled_graph
 from services.github import GitHubService
+from services.github_app import get_installation_access_token
 from state.models import PRReviewState
 
 logging.basicConfig(
@@ -67,10 +68,20 @@ def run_review_from_file(mock_path: str) -> PRReviewState:
 
     pr = mock["pull_request"]
     repo = mock["repository"]
+
+    # Use GitHub App installation token when available (same as webhook flow)
+    github_token: str | None = None
+    installation = mock.get("installation")
+    if installation and installation.get("id"):
+        installation_id = int(installation["id"])
+        logger.info("Using GitHub App installation token for installation %d", installation_id)
+        github_token = get_installation_access_token(installation_id)
+
     return run_review_from_payload(
         repo_name=repo["name"],
         owner=repo["owner"]["login"],
         pr_number=pr["number"],
+        github_token=github_token,
     )
 
 

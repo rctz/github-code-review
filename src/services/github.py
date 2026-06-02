@@ -17,15 +17,33 @@ def _normalize_lines(text: str) -> list[str]:
     return [line.rstrip() for line in text.splitlines()]
 
 
+def _strip_indentation(lines: list[str]) -> list[str]:
+    """Remove common leading whitespace from all non-empty lines."""
+    non_empty = [ln for ln in lines if ln.strip()]
+    if not non_empty:
+        return lines
+    common = len(non_empty[0]) - len(non_empty[0].lstrip())
+    for ln in non_empty[1:]:
+        indent = len(ln) - len(ln.lstrip())
+        common = min(common, indent)
+    return [ln[common:] if ln.strip() else ln for ln in lines]
+
+
 def find_line_in_file(file_content: str, code_snippet: str) -> tuple[int, int] | None:
     """Find a code snippet in real file content and return its 1-based line range.
 
-    Does a line-by-line match preserving indentation (only trailing whitespace
-    is ignored). Returns ``(start, end)`` where both are 1-based line numbers,
-    or ``None`` if not found.
+    Matching strategy (tried in order, returns first hit):
+    1. Exact match — rstrip per line, indentation preserved.
+    2. Indent-stripped match — removes common leading whitespace from both
+       snippet and candidate window so indentation differences from diff
+       context lines don't cause misses.
+    3. First-line anchor — if the snippet has multiple lines but only the
+       first line uniquely matches, return that single line. Handles cases
+       where the LLM collapsed or reformatted subsequent lines.
+
+    Returns ``(start, end)`` (1-based, inclusive) or ``None``.
     """
     snippet_lines = _normalize_lines(code_snippet.strip())
-    # Drop leading/trailing blank lines produced by the strip above
     while snippet_lines and not snippet_lines[0]:
         snippet_lines.pop(0)
     while snippet_lines and not snippet_lines[-1]:
@@ -36,10 +54,28 @@ def find_line_in_file(file_content: str, code_snippet: str) -> tuple[int, int] |
 
     n = len(snippet_lines)
     file_lines = _normalize_lines(file_content)
+    total = len(file_lines)
 
-    for i in range(len(file_lines) - n + 1):
+    # --- Pass 1: exact match ---
+    for i in range(total - n + 1):
         if file_lines[i : i + n] == snippet_lines:
-            return (i + 1, i + n)  # 1-based
+            return (i + 1, i + n)
+
+    # --- Pass 2: indent-stripped match ---
+    stripped_snippet = _strip_indentation(snippet_lines)
+    for i in range(total - n + 1):
+        window = _strip_indentation(file_lines[i : i + n])
+        if window == stripped_snippet:
+            return (i + 1, i + n)
+
+    # --- Pass 3: first-line anchor (handles reformatted multi-line snippets) ---
+    # Only when snippet has >1 line and the first line is distinctive (>10 chars)
+    if n > 1 and len(snippet_lines[0].strip()) > 10:
+        anchor = snippet_lines[0].strip()
+        stripped_anchor = stripped_snippet[0].strip()
+        for i, file_line in enumerate(file_lines):
+            if file_line.strip() == anchor or file_line.strip() == stripped_anchor:
+                return (i + 1, i + 1)
 
     return None
 

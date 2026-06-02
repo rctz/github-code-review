@@ -34,14 +34,37 @@ def _line_in_diff(line: int, ranges: list[tuple[int, int]]) -> bool:
 
 
 def _strip_diff_markers(snippet: str) -> str:
-    """Remove leading +/- diff markers from each line of a snippet."""
+    """Remove unified-diff prefix characters from each line of a snippet.
+
+    Unified diff lines start with:
+      '+' — added line
+      '-' — removed line
+      ' ' — context line (one leading space that is NOT part of the file content)
+
+    All three prefixes must be stripped to recover the real file content.
+    Lines that don't start with any of these (e.g. already clean) are left as-is.
+    """
     cleaned = []
     for line in snippet.splitlines():
-        if line.startswith(("+", "-")):
+        if line.startswith(("+", "-", " ")):
             cleaned.append(line[1:])
         else:
             cleaned.append(line)
     return "\n".join(cleaned)
+
+
+def _find_closest_line(file_content: str, snippet: str) -> str:
+    """Return the first file line that contains any word from the snippet (for debug logging)."""
+    first_word = next(
+        (w for line in snippet.splitlines() for w in line.split() if len(w) > 4),
+        None,
+    )
+    if not first_word:
+        return "(no usable keyword)"
+    for i, line in enumerate(file_content.splitlines(), 1):
+        if first_word in line:
+            return f"line {i}: {line.rstrip()[:120]}"
+    return f"(keyword {first_word!r} not found in file)"
 
 
 def _build_review_body(item: ReviewItem) -> str:
@@ -171,10 +194,16 @@ def post_review_node(state: PRReviewState) -> dict:
                             )
                             continue
                     else:
+                        # Log full snippet repr so we can see exact whitespace/escaping
                         logger.warning(
-                            "[inline] %s — find_line_in_file returned None → fallback | snippet: %r",
+                            "[inline] %s — find_line_in_file returned None → fallback\n"
+                            "  raw snippet  : %r\n"
+                            "  clean snippet: %r\n"
+                            "  first file line containing any snippet word: %s",
                             review.filename,
-                            clean_snippet[:120],
+                            item.existing_code_to_replace[:300],
+                            clean_snippet[:300],
+                            _find_closest_line(file_content, clean_snippet),
                         )
                 elif not item.existing_code_to_replace.strip():
                     logger.warning(
