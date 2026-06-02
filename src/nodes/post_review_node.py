@@ -119,7 +119,19 @@ def post_review_node(state: PRReviewState) -> dict:
             # Guard: treat error sentinel strings from fetch_file_content as missing
             file_content_valid = bool(file_content) and not file_content.startswith("[Error")
 
+            if not file_content_valid:
+                logger.warning(
+                    "[inline] %s — file content unavailable (%s), all items → fallback",
+                    review.filename,
+                    file_content[:60] if file_content else "empty",
+                )
+
             diff_ranges = diff_ranges_cache.get(review.filename, [])
+            if not diff_ranges:
+                logger.warning(
+                    "[inline] %s — no diff hunk ranges found in pr_files, hunk check skipped",
+                    review.filename,
+                )
 
             for item in review.reviews:
                 body = _build_review_body(item)
@@ -133,10 +145,12 @@ def post_review_node(state: PRReviewState) -> dict:
                         start_line, end_line = line_range
                         # GitHub only accepts lines present in the diff hunk
                         if diff_ranges and not _line_in_diff(end_line, diff_ranges):
-                            logger.debug(
-                                "Line %d of %s not in diff hunks — routing to fallback",
-                                end_line,
+                            logger.warning(
+                                "[inline] %s — resolved line %d not in diff hunks %s → fallback | snippet: %r",
                                 review.filename,
+                                end_line,
+                                diff_ranges,
+                                clean_snippet[:120],
                             )
                         else:
                             comment: dict = {
@@ -149,7 +163,25 @@ def post_review_node(state: PRReviewState) -> dict:
                                 comment["start_line"] = start_line
                                 comment["start_side"] = "RIGHT"
                             inline_comments.append(comment)
+                            logger.info(
+                                "[inline] %s:%d-%d queued as inline comment ✓",
+                                review.filename,
+                                start_line,
+                                end_line,
+                            )
                             continue
+                    else:
+                        logger.warning(
+                            "[inline] %s — find_line_in_file returned None → fallback | snippet: %r",
+                            review.filename,
+                            clean_snippet[:120],
+                        )
+                elif not item.existing_code_to_replace.strip():
+                    logger.warning(
+                        "[inline] %s — existing_code_to_replace is empty → fallback | title: %s",
+                        review.filename,
+                        item.title,
+                    )
 
                 # Could not resolve line or not in diff — queue as fallback
                 fallback_bodies.append(f"### 📄 `{review.filename}`\n\n{body}")
