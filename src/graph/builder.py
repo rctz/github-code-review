@@ -26,14 +26,9 @@ def _is_reviewable(filename: str, diff: str) -> bool:
     if Path(filename).suffix.lower() in _DOC_EXTENSIONS:
         return False
     added_lines = [
-        line[1:].strip()
-        for line in diff.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
+        line[1:].strip() for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")
     ]
-    non_trivial = [
-        line for line in added_lines
-        if line and not any(line.startswith(p) for p in _COMMENT_PREFIXES)
-    ]
+    non_trivial = [line for line in added_lines if line and not any(line.startswith(p) for p in _COMMENT_PREFIXES)]
     return bool(non_trivial)
 
 

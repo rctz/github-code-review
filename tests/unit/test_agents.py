@@ -37,7 +37,9 @@ class TestPersonaAgent:
 
     @patch("agents.persona.GitHubService")
     @patch("agents.persona.LLMFactory")
-    def test_run_persona_includes_project_context_in_prompt(self, mock_factory: MagicMock, mock_github_cls: MagicMock) -> None:
+    def test_run_persona_includes_project_context_in_prompt(
+        self, mock_factory: MagicMock, mock_github_cls: MagicMock
+    ) -> None:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "ROS2-focused reviewer"
         mock_factory.create.return_value = mock_llm
@@ -64,9 +66,7 @@ class TestPersonaAgent:
 class TestDependencyAgent:
     def _make_mock_service(self, **overrides: str) -> MagicMock:
         service = MagicMock()
-        service.fetch_file_content.return_value = overrides.get(
-            "content", "def helper(): pass"
-        )
+        service.fetch_file_content.return_value = overrides.get("content", "def helper(): pass")
         return service
 
     def test_no_resolver_for_unknown_ext(self) -> None:

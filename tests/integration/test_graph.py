@@ -37,9 +37,7 @@ class TestGraphIntegration:
     @patch("nodes.review_node.run_review")
     @patch("nodes.dependency_node.run_dependency")
     @patch("nodes.persona_node.run_persona")
-    def test_full_graph_execution(
-        self, mock_persona: MagicMock, mock_dep: MagicMock, mock_review: MagicMock
-    ) -> None:
+    def test_full_graph_execution(self, mock_persona: MagicMock, mock_dep: MagicMock, mock_review: MagicMock) -> None:
         mock_persona.return_value = "You are a senior Python reviewer."
         mock_dep.return_value = "No external dependencies detected in this diff."
         mock_review.return_value = _make_review_output()

@@ -69,9 +69,7 @@ def post_review_node(state: PRReviewState) -> dict:
 
             # Fetch file content once per file
             if review.filename not in file_content_cache:
-                content = github_service.fetch_file_content(
-                    full_repo, review.filename, ref=head_sha
-                )
+                content = github_service.fetch_file_content(full_repo, review.filename, ref=head_sha)
                 file_content_cache[review.filename] = content
             file_content = file_content_cache[review.filename]
 

@@ -80,9 +80,7 @@ class GitHubAppService:
         resp = requests.post(url, headers=self._headers(), timeout=10)
 
         if resp.status_code != 201:
-            raise RuntimeError(
-                f"Failed to get installation access token: HTTP {resp.status_code} - {resp.text}"
-            )
+            raise RuntimeError(f"Failed to get installation access token: HTTP {resp.status_code} - {resp.text}")
 
         token = resp.json()["token"]
         logger.info("Obtained installation access token for installation %d", installation_id)

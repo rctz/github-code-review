@@ -289,9 +289,7 @@ class GitHubService:
         the response (very large repos).
         """
         url = f"{_GITHUB_API}/repos/{repo_name}/git/trees/{tree_sha}"
-        resp = requests.get(
-            url, headers=self._headers(), params={"recursive": "1"}, timeout=15
-        )
+        resp = requests.get(url, headers=self._headers(), params={"recursive": "1"}, timeout=15)
         if resp.status_code != 200:
             logger.warning(
                 "fetch_repo_tree failed for %s@%s: HTTP %d",

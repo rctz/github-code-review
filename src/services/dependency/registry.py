@@ -25,9 +25,7 @@ def analyze_repository(repo_root: str) -> RepoContext:
 
 def create_python_resolver(context: RepoContext) -> PythonResolver:
     """Build a PythonResolver with plugins appropriate for the given repo context."""
-    plugins: list[PythonImportPlugin] = (
-        [Ros2InterfacePlugin(), Ros2AmentWorkspacePlugin()] if context.is_ros2 else []
-    )
+    plugins: list[PythonImportPlugin] = [Ros2InterfacePlugin(), Ros2AmentWorkspacePlugin()] if context.is_ros2 else []
     attr_plugins: list[PythonAttrPlugin] = [Ros2AttrPlugin()] if context.is_ros2 else []
     return PythonResolver(plugins=plugins, attr_plugins=attr_plugins)
 
