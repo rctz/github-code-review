@@ -4,6 +4,13 @@ from pathlib import Path
 
 import jwt
 import requests
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from config.settings import settings
 
@@ -43,29 +50,45 @@ def _generate_app_jwt() -> str:
     return jwt.encode(payload, private_key, algorithm="RS256")
 
 
+class GitHubAppService:
+    """Service for GitHub App JWT authentication and token exchange."""
+
+    @staticmethod
+    def _headers() -> dict:
+        return {
+            "Authorization": f"Bearer {_generate_app_jwt()}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=10),
+        retry=retry_if_exception_type(requests.RequestException),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
+    def get_installation_access_token(self, installation_id: int) -> str:
+        """Exchange a GitHub App JWT for an installation access token.
+
+        Args:
+            installation_id: The installation ID from the webhook payload.
+
+        Returns:
+            The installation access token string.
+        """
+        url = f"{_GITHUB_API}/app/installations/{installation_id}/access_tokens"
+        resp = requests.post(url, headers=self._headers(), timeout=10)
+
+        if resp.status_code != 201:
+            raise RuntimeError(
+                f"Failed to get installation access token: HTTP {resp.status_code} - {resp.text}"
+            )
+
+        token = resp.json()["token"]
+        logger.info("Obtained installation access token for installation %d", installation_id)
+        return token
+
+
 def get_installation_access_token(installation_id: int) -> str:
-    """Exchange a GitHub App JWT for an installation access token.
-
-    Args:
-        installation_id: The installation ID from the webhook payload.
-
-    Returns:
-        The installation access token string.
-    """
-    app_jwt = _generate_app_jwt()
-    headers = {
-        "Authorization": f"Bearer {app_jwt}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    url = f"{_GITHUB_API}/app/installations/{installation_id}/access_tokens"
-    resp = requests.post(url, headers=headers, timeout=10)
-
-    if resp.status_code != 201:
-        raise RuntimeError(
-            f"Failed to get installation access token: HTTP {resp.status_code} - {resp.text}"
-        )
-
-    token = resp.json()["token"]
-    logger.info("Obtained installation access token for installation %d", installation_id)
-    return token
+    """Convenience wrapper around ``GitHubAppService``."""
+    return GitHubAppService().get_installation_access_token(installation_id)
