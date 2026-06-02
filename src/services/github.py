@@ -12,23 +12,33 @@ logger = logging.getLogger(__name__)
 _GITHUB_API = "https://api.github.com"
 
 
+def _normalize_lines(text: str) -> list[str]:
+    """Strip trailing whitespace from each line while preserving indentation."""
+    return [line.rstrip() for line in text.splitlines()]
+
+
 def find_line_in_file(file_content: str, code_snippet: str) -> tuple[int, int] | None:
     """Find a code snippet in real file content and return its 1-based line range.
 
-    Does an exact substring search against the file. Returns ``(start, end)``
-    where both are 1-based line numbers, or ``None`` if not found.
+    Does a line-by-line match preserving indentation (only trailing whitespace
+    is ignored). Returns ``(start, end)`` where both are 1-based line numbers,
+    or ``None`` if not found.
     """
-    snippet = code_snippet.strip()
-    if not snippet:
+    snippet_lines = _normalize_lines(code_snippet.strip())
+    # Drop leading/trailing blank lines produced by the strip above
+    while snippet_lines and not snippet_lines[0]:
+        snippet_lines.pop(0)
+    while snippet_lines and not snippet_lines[-1]:
+        snippet_lines.pop()
+
+    if not snippet_lines:
         return None
 
-    file_lines = file_content.splitlines()
-    snippet_lines = snippet.splitlines()
     n = len(snippet_lines)
+    file_lines = _normalize_lines(file_content)
 
     for i in range(len(file_lines) - n + 1):
-        chunk = "\n".join(file_lines[i : i + n])
-        if chunk.strip() == snippet:
+        if file_lines[i : i + n] == snippet_lines:
             return (i + 1, i + n)  # 1-based
 
     return None

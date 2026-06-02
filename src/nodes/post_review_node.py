@@ -1,4 +1,5 @@
 import logging
+import re
 
 from agents.review import FileReviewOutput, ReviewItem
 from services.github import GitHubService, find_line_in_file
@@ -7,6 +8,40 @@ from state.models import PRReviewState
 logger = logging.getLogger(__name__)
 
 _SEVERITY_EMOJI = {"Critical": "🔴", "High": "🟠", "Mid": "🟡"}
+
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _parse_diff_line_ranges(diff: str) -> list[tuple[int, int]]:
+    """Return list of (start, end) line ranges (1-based, inclusive) for the RIGHT side of a diff.
+
+    These are the only lines GitHub's Reviews API accepts as inline comment targets.
+    """
+    ranges: list[tuple[int, int]] = []
+    for line in diff.splitlines():
+        m = _HUNK_HEADER_RE.match(line)
+        if m:
+            start = int(m.group(1))
+            count = int(m.group(2)) if m.group(2) is not None else 1
+            if count > 0:
+                ranges.append((start, start + count - 1))
+    return ranges
+
+
+def _line_in_diff(line: int, ranges: list[tuple[int, int]]) -> bool:
+    """Return True if ``line`` falls within any hunk range."""
+    return any(start <= line <= end for start, end in ranges)
+
+
+def _strip_diff_markers(snippet: str) -> str:
+    """Remove leading +/- diff markers from each line of a snippet."""
+    cleaned = []
+    for line in snippet.splitlines():
+        if line.startswith(("+", "-")):
+            cleaned.append(line[1:])
+        else:
+            cleaned.append(line)
+    return "\n".join(cleaned)
 
 
 def _build_review_body(item: ReviewItem) -> str:
@@ -60,6 +95,14 @@ def post_review_node(state: PRReviewState) -> dict:
         fallback_bodies: list[str] = []
         file_content_cache: dict[str, str] = {}
 
+        # Build a map of filename → valid diff line ranges for hunk validation
+        diff_ranges_cache: dict[str, list[tuple[int, int]]] = {}
+        for pr_file in state.pr_files:
+            fname = pr_file.get("filename", "")
+            raw_diff = pr_file.get("diff") or ""
+            if fname and raw_diff:
+                diff_ranges_cache[fname] = _parse_diff_line_ranges(raw_diff)
+
         for raw in state.file_reviews:
             try:
                 review = FileReviewOutput.model_validate_json(raw)
@@ -73,27 +116,42 @@ def post_review_node(state: PRReviewState) -> dict:
                 file_content_cache[review.filename] = content
             file_content = file_content_cache[review.filename]
 
+            # Guard: treat error sentinel strings from fetch_file_content as missing
+            file_content_valid = bool(file_content) and not file_content.startswith("[Error")
+
+            diff_ranges = diff_ranges_cache.get(review.filename, [])
+
             for item in review.reviews:
                 body = _build_review_body(item)
 
-                if file_content and item.existing_code_to_replace.strip():
-                    line_range = find_line_in_file(file_content, item.existing_code_to_replace)
+                if file_content_valid and item.existing_code_to_replace.strip():
+                    # Strip +/- diff markers the LLM may have included
+                    clean_snippet = _strip_diff_markers(item.existing_code_to_replace)
+                    line_range = find_line_in_file(file_content, clean_snippet)
 
                     if line_range:
                         start_line, end_line = line_range
-                        comment: dict = {
-                            "path": review.filename,
-                            "line": end_line,
-                            "side": "RIGHT",
-                            "body": body,
-                        }
-                        if start_line != end_line:
-                            comment["start_line"] = start_line
-                            comment["start_side"] = "RIGHT"
-                        inline_comments.append(comment)
-                        continue
+                        # GitHub only accepts lines present in the diff hunk
+                        if diff_ranges and not _line_in_diff(end_line, diff_ranges):
+                            logger.debug(
+                                "Line %d of %s not in diff hunks — routing to fallback",
+                                end_line,
+                                review.filename,
+                            )
+                        else:
+                            comment: dict = {
+                                "path": review.filename,
+                                "line": end_line,
+                                "side": "RIGHT",
+                                "body": body,
+                            }
+                            if start_line != end_line:
+                                comment["start_line"] = start_line
+                                comment["start_side"] = "RIGHT"
+                            inline_comments.append(comment)
+                            continue
 
-                # Could not resolve line — queue as fallback
+                # Could not resolve line or not in diff — queue as fallback
                 fallback_bodies.append(f"### 📄 `{review.filename}`\n\n{body}")
 
         # -- Phase 2: batch-post inline comments as one review ---------------
